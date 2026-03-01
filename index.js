@@ -212,7 +212,7 @@ async function checkRobloxGroupEligibility(username) {
 // ========= DISCORD UI BUILDERS =========
 function buildPanelEmbed() {
   return new EmbedBuilder()
-    .setTitle("OLENG BEACH — Order Robux")
+    .setTitle("💸ORDER ROBUX — VIA COMMUNITY PAYOUT")
     .setDescription(
       [
         "**Syarat sebelum order**",
@@ -246,7 +246,7 @@ function buildPanelComponents() {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("ob_order_open_modal")
-        .setLabel("ORDER")
+        .setLabel("💸ORDER ROBUX")
         .setStyle(ButtonStyle.Success)
     ),
   ];
@@ -465,26 +465,45 @@ client.on("messageCreate", async (msg) => {
   try {
     if (!msg.guild || msg.author.bot) return;
 
-    // Find order by channelId
-    const order = Array.from(orders.values()).find((o) => o.channelId === msg.channelId);
+    // Cari order berdasarkan channel
+    const order = Array.from(orders.values()).find(
+      (o) => o.channelId === msg.channelId
+    );
     if (!order) return;
 
-    // Touch activity for any message in ticket
-    touchActivity(order, "message");
+    // Semua chat dihitung sebagai activity (untuk inactivity close)
+    touchActivity(order);
 
-    // Auto-detect proof: ticket owner sends attachment while awaiting payment
-    const hasAttachment = msg.attachments?.size > 0;
-    if (hasAttachment && msg.author.id === order.userId && (order.status === "AWAITING_PAYMENT" || order.status === "PAYMENT_SELECTION")) {
-      order.status = "PROOF_SUBMITTED";
-      order.proofSubmittedAt = nowIso();
-      orders.set(order.orderId, order);
-      saveOrders();
+    // ===== PROOF DETECTION =====
+    // Hanya kalau status AWAITING_PROOF dan yang kirim adalah customer
+    if (order.status === "AWAITING_PROOF" && msg.author.id === order.userId) {
 
-      await msg.channel.send(
-        `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
-        `👮‍♂️ Staff silakan cek, lalu tekan **Mark Paid** jika valid.`
-      ).catch(() => {});
+      const attachments = msg.attachments;
+      if (!attachments || attachments.size === 0) return;
+
+      // Cek apakah ada attachment berupa gambar
+      const hasImage = [...attachments.values()].some(
+        (a) => a.contentType && a.contentType.startsWith("image/")
+      );
+
+      // Kalau ada gambar → anggap sebagai bukti transfer
+      if (hasImage) {
+        order.status = "PROOF_SUBMITTED";
+        order.proofSubmittedAt = nowIso();
+        order.proofDeadlineAt = null; // Stop deadline
+        orders.set(order.orderId, order);
+        saveOrders();
+
+        await msg.channel.send(
+          `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
+          `👮‍♂️ Staff silakan cek dan tekan **Mark Paid** jika valid.`
+        ).catch(() => {});
+      }
+
+      // Kalau bukan gambar → tidak ditolak
+      // Timer tetap berjalan
     }
+
   } catch (e) {
     console.error("messageCreate error:", e);
   }
@@ -692,21 +711,37 @@ client.on("interactionCreate", async (i) => {
         }
 
         if (action === "ob_done") {
-          // Staff-only: arm auto-close inactivity
-          order.status = "DONE";
-          order.autoCloseArmed = true;
-          order.autoCloseMinutes = AUTO_CLOSE_MINUTES;
-          touchActivity(order, "done"); // set lastActivityAt now
+  order.status = "DONE";
+  order.autoCloseArmed = true;
+  order.proofDeadlineAt = null;
+  touchActivity(order);
 
-          const updated = buildOrderEmbed(order);
-          await i.reply({ content: `✅ Proses selesai. Ticket akan auto-tutup jika **${AUTO_CLOSE_MINUTES} menit** tidak ada aktivitas.`, ephemeral: true });
-          await i.message.edit({ embeds: [updated], components: buildStaffControls(orderId) }).catch(() => {});
-          await i.channel.send(
-            `✅ **PROSES SELESAI**.\n` +
-            `⏳ Ticket akan ditutup otomatis jika tidak ada aktivitas selama **${AUTO_CLOSE_MINUTES} menit**.`
-          ).catch(() => {});
-          return;
-        }
+  const now = new Date();
+  const tanggal = now.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta" });
+  const jam = now.toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" });
+
+  await i.reply({
+    content: `✅ Proses selesai. Ticket akan auto-tutup jika **${AUTO_CLOSE_MINUTES} menit** tidak ada aktivitas.`,
+    ephemeral: true,
+  });
+
+  await i.channel.send(
+    `🎉 **ROBux TELAH DIKIRIM!** 🎉\n\n` +
+    `💎 Total Robux: **${fmtIDR(order.qty)}**\n` +
+    `📅 Tanggal: **${tanggal}**\n` +
+    `⏰ Jam: **${jam} WIB**\n\n` +
+    `Silakan cek kembali Robux kamu.\n` +
+    `Jika ada kendala, silakan hubungi owner.\n\n` +
+    `⏳ Ticket akan ditutup otomatis jika tidak ada aktivitas selama **${AUTO_CLOSE_MINUTES} menit**.`
+  ).catch(() => {});
+
+  await i.message.edit({
+    embeds: [buildOrderEmbed(order)],
+    components: buildStaffControls(orderId),
+  }).catch(() => {});
+
+  return;
+}
 
         if (action === "ob_resendpay") {
           if (order.paymentMethod === "SEABANK") {
