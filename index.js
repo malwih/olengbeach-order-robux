@@ -618,7 +618,7 @@ client.on("messageCreate", async (msg) => {
 
         await msg.channel.send(
           `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
-            `👮‍♂️ Staff/Owner silakan gunakan command **/proses aksi:selesai** setelah orderan benar-benar dikirim.`
+            `👮‍♂️ Staff/Owner akan proses Robux kamu, mohon bersedia menunggu...`
         ).catch(() => {});
       }
       // kalau bukan gambar: tidak dianggap bukti, timer tetap berjalan normal (tidak pause)
