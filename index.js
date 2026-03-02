@@ -1,23 +1,4 @@
-/**
- * OLENG BEACH Ticket Bot (discord.js v14) - Single File (FINAL)
- * - Panel order + modal
- * - Roblox group membership age check (>= ELIGIBLE_DAYS) via Roblox Open Cloud Groups API
- * - Ticket channel auto-create on submit (eligible / ineligible)
- * - Show join days + total robux + total price + buttons immediately after ticket created
- * - Buttons:
- *    - Bank Transfer (customer) -> show SeaBank info + total
- *    - Batalkan Order (customer) -> close/lock ticket
- *    - Proses Selesai (staff-only, sent as a separate staff message)
- *    - Close Ticket (for ineligible)
- * - Auto-close after 30 min inactivity:
- *    - Reset by chat activity
- *    - PAUSE after payment proof image submitted
- *    - RE-ARM after staff clicks "Proses Selesai"
- * - Persist orders to ./orders.json
- *
- * Node.js 18+ recommended
- */
-
+import fetch from "node-fetch";
 import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
@@ -34,7 +15,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
   EmbedBuilder,
-  StringSelectMenuBuilder,
+  SlashCommandBuilder,
 } from "discord.js";
 
 // ========= CONFIG =========
@@ -51,7 +32,7 @@ const SEABANK_ACCOUNT = process.env.SEABANK_ACCOUNT || "ISI_REKENING";
 const SEABANK_NAME = process.env.SEABANK_NAME || "ISI_NAMA_REKENING";
 
 const ELIGIBLE_DAYS = Number(process.env.ELIGIBLE_DAYS || 14);
-const PRICE_PER_1000 = Number(process.env.PRICE_PER_1000 || 110000);
+const PRICE_PER_1000 = Number(process.env.PRICE_PER_1000 || 100000);
 
 const AUTO_CLOSE_MINUTES = Number(process.env.AUTO_CLOSE_MINUTES || 30);
 
@@ -279,7 +260,7 @@ function buildPanelEmbed() {
         "2) Isi **Username Roblox** & **Jumlah**", 
         "3) Bot cek join komunitas Roblox", 
         "4) Ticket dibuat otomatis", 
-        "5) Staff klik **Process** → pilih **SeaBank**", 
+        "5) Staff kirim intruksi **Pembayaran** → customer pilih **Bank Transfer**", 
         "6) Customer transfer lalu kirim **bukti transfer** di ticket", 
         "", 
         "⚠️ **PENTING — JANGAN TRANSFER sebelum instruksi pembayaran muncul!**",
@@ -297,26 +278,6 @@ function buildStockStatusButton() {
     .setDisabled(true);
 }
 
-function buildStockControlDropdown() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("ob_stock_set")
-      .setPlaceholder("Staff/Owner: Ubah Status Stock")
-      .addOptions(
-        {
-          label: "Stock Ready",
-          value: "READY",
-          description: "Tampilkan READY (biru)"
-        },
-        {
-          label: "Stock Habis",
-          value: "HABIS",
-          description: "Tampilkan HABIS (merah)"
-        }
-      )
-  );
-}
-
 function buildPanelComponents() {
   const isReady = stockState.status === "READY";
 
@@ -326,10 +287,9 @@ function buildPanelComponents() {
         .setCustomId("ob_order_open_modal")
         .setLabel("💸ORDER ROBUX")
         .setStyle(ButtonStyle.Success)
-        .setDisabled(!isReady), // ✅ disable kalau stock HABIS
+        .setDisabled(!isReady),
       buildStockStatusButton()
-    ),
-    buildStockControlDropdown()
+    )
   ];
 }
 
@@ -460,17 +420,6 @@ function buildCustomerButtonsIneligible(orderId) {
   ];
 }
 
-function buildStaffDoneButton(orderId) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`ob_done_staff:${orderId}`)
-        .setLabel("✅ Proses Selesai")
-        .setStyle(ButtonStyle.Success)
-    ),
-  ];
-}
-
 function buildSeaBankInstructions(order) {
   return new EmbedBuilder()
     .setTitle("Instruksi Pembayaran — Bank Transfer")
@@ -550,20 +499,24 @@ async function runAutoCloseSweep(client) {
     if (!last) continue;
 
     if (now - last >= cutoffMs) {
-      try {
-        const guild = await client.guilds.fetch(order.guildId);
-        const ch = await guild.channels.fetch(order.channelId).catch(() => null);
-        if (!ch) continue;
+  try {
+    const guild = await client.guilds.fetch(order.guildId);
 
-        await deleteTicketChannel(
-  ch,
-  order,
-  `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Ticket akan dihapus...`
-);
-      } catch (e) {
-        console.error("Auto-close sweep error:", e);
-      }
-    }
+    const ch = await guild.channels
+      .fetch(order.channelId)
+      .catch(() => null);
+
+    if (!ch) continue; // 🔥 INI YANG PENTING
+
+    await deleteTicketChannel(
+      ch,
+      order,
+      `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Ticket akan dihapus...`
+    );
+  } catch (e) {
+    console.error("Auto-close sweep error:", e);
+  }
+}
   }
 }
 
@@ -584,12 +537,48 @@ const client = new Client({
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // Auto-close sweep loop
   setInterval(() => runAutoCloseSweep(client), 60 * 1000).unref();
 
-  // ✅ PANEL LOAD
+  const guild = await client.guilds.fetch(GUILD_ID);
+
+  await guild.commands.set([
+  new SlashCommandBuilder()
+    .setName("stok")
+    .setDescription("Ubah status stock")
+    .addStringOption(option =>
+      option
+        .setName("status")
+        .setDescription("Pilih status stock")
+        .setRequired(true)
+        .addChoices(
+          { name: "ready", value: "READY" },
+          { name: "habis", value: "HABIS" }
+        )
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("proses")
+    .setDescription("Staff: proses order")
+    .addStringOption(option =>
+      option
+        .setName("aksi")
+        .setDescription("Aksi proses")
+        .setRequired(true)
+        .addChoices({ name: "selesai", value: "SELESAI" })
+    )
+    .addStringOption(option =>
+      option
+        .setName("order")
+        .setDescription("Order ID (contoh: T-12345). Kosongkan jika jalankan di dalam ticket.")
+        .setRequired(false)
+    )
+    .toJSON(),
+]);
+
+  console.log("Slash commands /stok & /proses registered.");
+
   await refreshPanelMessage(client);
-  console.log("Panel sent/updated.");
 });
 
 // Track activity + detect payment proof
@@ -630,7 +619,7 @@ client.on("messageCreate", async (msg) => {
 
         await msg.channel.send(
           `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
-            `👮‍♂️ Staff/Owner silakan klik **Proses Selesai** setelah orderan benar-benar dikirim.`
+            `👮‍♂️ Staff/Owner silakan gunakan command **/proses aksi:selesai** setelah orderan benar-benar dikirim.`
         ).catch(() => {});
       }
       // kalau bukan gambar: tidak dianggap bukti, timer tetap berjalan normal (tidak pause)
@@ -642,31 +631,118 @@ client.on("messageCreate", async (msg) => {
 
 client.on("interactionCreate", async (i) => {
   try {
-    // Stock Select
-    if (i.isStringSelectMenu() && i.customId === "ob_stock_set") {
+    // ===== SLASH COMMAND STOCK =====
+if (i.isChatInputCommand() && i.commandName === "stok") {
+  const member = await i.guild.members.fetch(i.user.id).catch(() => null);
+
+  if (!isStaff(member)) {
+    return i.reply({
+      content: "Khusus staff/owner.",
+      ephemeral: true
+    });
+  }
+
+  const status = i.options.getString("status");
+
+  if (!["READY", "HABIS"].includes(status)) {
+    return i.reply({
+      content: "Status tidak valid.",
+      ephemeral: true
+    });
+  }
+
+  stockState.status = status;
+  stockState.updatedAt = nowIso();
+  stockState.updatedBy = i.user.id;
+  saveStock();
+
+  await i.reply({
+    content: `✅ Status stock diubah menjadi **${status}**.`,
+    ephemeral: true
+  });
+
+  await refreshPanelMessage(client);
+  return;
+}
+
+// ===== SLASH COMMAND PROSES =====
+if (i.isChatInputCommand() && i.commandName === "proses") {
   const member = await i.guild.members.fetch(i.user.id).catch(() => null);
 
   if (!isStaff(member)) {
     return i.reply({ content: "Khusus staff/owner.", ephemeral: true });
   }
 
-  const next = i.values?.[0];
+  const aksi = i.options.getString("aksi");
+  const orderArg = i.options.getString("order"); // optional
+  const channelId = i.channelId;
 
-  if (!["READY", "HABIS"].includes(next)) {
-    return i.reply({ content: "Pilihan tidak valid.", ephemeral: true });
+  if (aksi !== "SELESAI") {
+    return i.reply({ content: "Aksi tidak valid.", ephemeral: true });
   }
 
-  stockState.status = next;
-  stockState.updatedAt = nowIso();
-  stockState.updatedBy = i.user.id;
-  saveStock();
+  // Cari order: pakai orderId kalau diisi, kalau tidak cari dari channel sekarang
+  let order = null;
+
+  if (orderArg) {
+    order = orders.get(orderArg);
+    if (!order) {
+      return i.reply({ content: "Order ID tidak ditemukan.", ephemeral: true });
+    }
+  } else {
+    order = Array.from(orders.values()).find((o) => o.channelId === channelId);
+    if (!order) {
+      return i.reply({
+        content: "Command ini harus dipakai di channel ticket, atau isi option order.",
+        ephemeral: true,
+      });
+    }
+  }
+
+  // Pastikan command dijalankan di ticket yang benar
+  if (order.channelId !== channelId) {
+    return i.reply({
+      content: "Order itu bukan untuk channel ini. Jalankan di channel ticket yang benar.",
+      ephemeral: true,
+    });
+  }
+
+  // Wajib sudah submit bukti
+  if (order.status !== "PROOF_SUBMITTED" && order.status !== "AWAITING_PROOF") {
+    return i.reply({ content: "Belum ada bukti pembayaran (gambar).", ephemeral: true });
+  }
+
+  // Set DONE + re-arm timer
+  order.status = "DONE";
+  order.doneAt = nowIso();
+  order.autoClosePaused = false;
+  order.autoCloseEnabled = true;
+  touchActivity(order, "staff_done_command");
+
+  orders.set(order.orderId, order);
+  saveOrders();
+
+  const now = new Date();
+  const tanggal = now.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta" });
+  const jam = now.toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" });
 
   await i.reply({
-    content: `✅ Stock diubah menjadi **${next}**.`,
+    content: `✅ Proses selesai untuk **${order.orderId}**. Timer inactivity aktif lagi (${AUTO_CLOSE_MINUTES} menit).`,
     ephemeral: true,
   });
 
-  await refreshPanelMessage(client);
+  await i.channel.send(
+    `🎉 **ORDER BERHASIL DIKIRIM!** 🎉\n\n` +
+      `👤 Username Roblox: \`${order.robloxUsername}\`\n` +
+      `💎 Total Robux: **${fmtIDR(order.qty)}**\n` +
+      `💰 Total Bayar: **Rp ${fmtIDR(order.total)}**\n` +
+      `📅 Tanggal: **${tanggal}**\n` +
+      `⏰ Jam: **${jam} WIB**\n\n` +
+      `Silakan cek kembali Robux kamu.\n` +
+      `Jika ada kendala, silakan hubungi staff/owner.\n\n` +
+      `⏳ Ticket akan ditutup otomatis jika tidak ada aktivitas selama **${AUTO_CLOSE_MINUTES} menit**.`
+  ).catch(() => {});
+
   return;
 }
     // ORDER button -> modal
@@ -809,13 +885,6 @@ client.on("interactionCreate", async (i) => {
         if (order.note) {
           await ticket.send({ content: `📝 Catatan: ${order.note}` }).catch(() => {});
         }
-
-        // Staff-only message for "Proses Selesai"
-        await ticket.send({
-          content: `🔐 Staff/Owner: tombol internal untuk menyelesaikan order.`,
-          components: buildStaffDoneButton(orderId),
-        }).catch(() => {});
-
       } else {
         await ticket.send({
           content: `Halo <@${user.id}> 👋\nKamu **belum memenuhi syarat** untuk order.`,
@@ -841,11 +910,10 @@ client.on("interactionCreate", async (i) => {
 
     // Buttons that need valid order + correct channel
     const needsOrder = [
-      "ob_bank",
-      "ob_cancel_user",
-      "ob_close_ineligible",
-      "ob_done_staff",
-    ];
+  "ob_bank",
+  "ob_cancel_user",
+  "ob_close_ineligible",
+];
     if (needsOrder.includes(key)) {
       if (!order) return i.reply({ content: "Order tidak ditemukan.", ephemeral: true });
       if (i.channelId !== order.channelId) return i.reply({ content: "Tombol ini hanya valid di ticket ini.", ephemeral: true });
@@ -877,9 +945,7 @@ client.on("interactionCreate", async (i) => {
     if (key === "ob_cancel_user") {
   const member = await i.guild.members.fetch(i.user.id).catch(() => null);
   const allowed = i.user.id === order.userId || isStaff(member);
-  if (!allowed) {
-    return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
-  }
+  if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
 
   order.status = "CANCELLED";
   order.cancelledAt = nowIso();
@@ -889,21 +955,9 @@ client.on("interactionCreate", async (i) => {
   orders.set(order.orderId, order);
   saveOrders();
 
-  await i.reply({
-    content: "❌ Order ditutup. Ticket akan dihapus dalam 3 detik...",
-    ephemeral: true,
-  });
+  await i.reply({ content: "❌ Order ditutup. Ticket akan dihapus dalam 3 detik...", ephemeral: true });
 
-  await i.channel.send("❌ Order ditutup oleh user. Ticket akan dihapus...").catch(() => {});
-
-  setTimeout(async () => {
-    try {
-      await i.channel.delete("Order dibatalkan.");
-    } catch (err) {
-      console.error("Delete ticket error:", err);
-    }
-  }, 3000);
-
+  await deleteTicketChannel(i.channel, order, "❌ Order ditutup oleh user. Ticket akan dihapus...");
   return;
 }
 
@@ -930,58 +984,6 @@ await deleteTicketChannel(
 
 return;
     }
-
-    // PROSES SELESAI (staff-only)
-    if (key === "ob_done_staff") {
-      const member = await i.guild.members.fetch(i.user.id).catch(() => null);
-      if (!isStaff(member)) {
-        return i.reply({ content: "Khusus staff/owner.", ephemeral: true });
-      }
-
-      // Must have proof submitted? (optional strict)
-      // Kamu minta: "tunggu staff/owner klik proses selesai" setelah bukti masuk.
-      // Jadi kita enforce: hanya boleh done kalau PROOF_SUBMITTED (biar rapi)
-      if (order.status !== "PROOF_SUBMITTED" && order.status !== "AWAITING_PROOF") {
-        return i.reply({
-          content: "Belum ada bukti pembayaran (atau belum di tahap pembayaran).",
-          ephemeral: true,
-        });
-      }
-
-      order.status = "DONE";
-      order.doneAt = nowIso();
-
-      // Re-arm timer inactivity after done
-      order.autoClosePaused = false;
-      order.autoCloseEnabled = true;
-      touchActivity(order, "staff_done_clicked");
-
-      orders.set(order.orderId, order);
-      saveOrders();
-
-      const now = new Date();
-      const tanggal = now.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta" });
-      const jam = now.toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" });
-
-      await i.reply({
-        content: `✅ Proses selesai. Timer inactivity aktif lagi, ticket akan auto-close jika **${AUTO_CLOSE_MINUTES} menit** tidak ada aktivitas.`,
-        ephemeral: true,
-      });
-
-      await i.channel.send(
-  `🎉 **ORDER BERHASIL DIKIRIM!** 🎉\n\n` +
-  `👤 Username Roblox: \`${order.robloxUsername}\`\n` +
-  `💎 Total Robux: **${fmtIDR(order.qty)}**\n` +
-  `💰 Total Bayar: **Rp ${fmtIDR(order.total)}**\n` +
-  `📅 Tanggal: **${tanggal}**\n` +
-  `⏰ Jam: **${jam} WIB**\n\n` +
-  `Silakan cek kembali Robux kamu.\n` +
-  `Jika ada kendala, silakan hubungi staff/owner.\n\n` +
-  `⏳ Ticket akan ditutup otomatis jika tidak ada aktivitas selama **${AUTO_CLOSE_MINUTES} menit**.`
-).catch(() => {});
-      return;
-    }
-
   } catch (e) {
     console.error("interaction error:", e);
     if (i.deferred || i.replied) {
