@@ -402,18 +402,39 @@ function touchActivity(order, reason = "activity") {
   saveOrders();
 }
 
-async function lockTicketChannel(channel, order, reasonText) {
+async function deleteTicketChannel(channel, order, reasonText) {
   try {
-    // lock user send msg
-    await channel.permissionOverwrites.edit(order.userId, { SendMessages: false }).catch(() => {});
+    // update status dulu biar ke-save walau delete gagal
     order.status = "CLOSED";
     order.closedAt = nowIso();
+    order.autoCloseEnabled = false;
+    order.autoClosePaused = false;
+
     orders.set(order.orderId, order);
     saveOrders();
 
-    await channel.send(reasonText || "🔒 Ticket ditutup.").catch(() => {});
+    // kasih notice (opsional)
+    if (reasonText) {
+      await channel.send(reasonText).catch(() => {});
+    }
+
+    // delete after 3 seconds biar message sempat kebaca
+    setTimeout(async () => {
+      try {
+        await channel.delete("Ticket closed (deleted).");
+      } catch (e) {
+        console.error("Failed to delete channel:", e);
+
+        // fallback kalau gagal delete: lock saja supaya tetap ketutup
+        try {
+          await channel.permissionOverwrites.edit(order.userId, { SendMessages: false }).catch(() => {});
+          await channel.send("⚠️ Bot gagal menghapus channel (permission). Ticket dikunci sebagai fallback.").catch(() => {});
+        } catch {}
+      }
+    }, 3000);
+
   } catch (e) {
-    console.error("Failed to lock ticket:", e);
+    console.error("deleteTicketChannel error:", e);
   }
 }
 
@@ -436,11 +457,11 @@ async function runAutoCloseSweep(client) {
         const ch = await guild.channels.fetch(order.channelId).catch(() => null);
         if (!ch) continue;
 
-        await lockTicketChannel(
-          ch,
-          order,
-          `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Jika perlu, silakan buat order baru / hubungi staff.`
-        );
+        await deleteTicketChannel(
+  ch,
+  order,
+  `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Ticket akan dihapus...`
+);
       } catch (e) {
         console.error("Auto-close sweep error:", e);
       }
@@ -784,15 +805,21 @@ client.on("interactionCreate", async (i) => {
       if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk ticket ini.", ephemeral: true });
 
       order.status = "CLOSED";
-      order.closedAt = nowIso();
-      order.autoCloseEnabled = false;
-      order.autoClosePaused = false;
-      orders.set(order.orderId, order);
-      saveOrders();
+order.closedAt = nowIso();
+order.autoCloseEnabled = false;
+order.autoClosePaused = false;
+orders.set(order.orderId, order);
+saveOrders();
 
-      await i.reply({ content: "🔒 Ticket ditutup.", ephemeral: true });
-      await lockTicketChannel(i.channel, order, "🔒 Ticket ditutup (locked).");
-      return;
+await i.reply({ content: "🔒 Ticket akan dihapus dalam 3 detik...", ephemeral: true });
+
+await deleteTicketChannel(
+  i.channel,
+  order,
+  "🔒 Ticket ditutup (ineligible). Ticket akan dihapus..."
+);
+
+return;
     }
 
     // PROSES SELESAI (staff-only)
