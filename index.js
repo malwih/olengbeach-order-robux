@@ -239,17 +239,21 @@ function buildPanelEmbed() {
         "• Link komunitas: https://www.roblox.com/share/g/819348691",
         "",
         "💰 **PRICE LIST ROBUX**",
-        "➡️ Kelipatan 1.000 (otomatis dihitung bot).",
+        "💎 1.000 Robux = Rp 100.000",
+        "💎 2.000 Robux = Rp 200.000",
+        "💎 3.000 Robux = Rp 300.000",
+        "💎 4.000 Robux = Rp 400.000",
+        "💎 5.000 Robux = Rp 500.000",
+        "➡️ dan seterusnya (kelipatan 1.000)",
         "",
         "**Cara order (step by step)**",
-        "1) Klik tombol **ORDER** di bawah",
-        "2) Isi **Username Roblox** & **Jumlah**",
-        "3) Bot cek join komunitas Roblox",
-        "4) Ticket dibuat otomatis",
-        "5) Klik **Bank Transfer** untuk lihat instruksi pembayaran",
-        "6) Transfer lalu kirim **bukti transfer (gambar)** di ticket",
-        "7) Tunggu staff klik **Proses Selesai**",
-        "",
+        "1) Klik tombol **ORDER ROBUX** di bawah", 
+        "2) Isi **Username Roblox** & **Jumlah**", 
+        "3) Bot cek join komunitas Roblox", 
+        "4) Ticket dibuat otomatis", 
+        "5) Staff klik **Process** → pilih **SeaBank**", 
+        "6) Customer transfer lalu kirim **bukti transfer** di ticket", 
+        "", 
         "⚠️ **PENTING — JANGAN TRANSFER sebelum instruksi pembayaran muncul!**",
       ].join("\n")
     )
@@ -341,7 +345,7 @@ function buildCustomerButtonsEligible(orderId) {
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`ob_cancel_user:${orderId}`)
-        .setLabel("❌ Batalkan Order")
+        .setLabel("❌ Close Order")
         .setStyle(ButtonStyle.Danger)
     ),
   ];
@@ -371,13 +375,13 @@ function buildStaffDoneButton(orderId) {
 
 function buildSeaBankInstructions(order) {
   return new EmbedBuilder()
-    .setTitle("Instruksi Pembayaran — SeaBank")
+    .setTitle("Instruksi Pembayaran — Bank Transfer")
     .setDescription(
       [
         `**Order:** ${order.orderId}`,
         `**Total Bayar:** Rp ${fmtIDR(order.total)}`,
         "",
-        `**Rekening SeaBank:** \`${SEABANK_ACCOUNT}\``,
+        `**Bank SeaBank:** \`${SEABANK_ACCOUNT}\``,
         `**A/N:** ${SEABANK_NAME}`,
         "",
         "✅ Setelah transfer, **kirim bukti transfer (gambar/ss)** di chat ticket ini.",
@@ -531,8 +535,7 @@ client.on("messageCreate", async (msg) => {
 
         await msg.channel.send(
           `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
-            `⏸️ Timer inactivity **di-pause**.\n` +
-            `👮‍♂️ Staff/Owner silakan klik **Proses Selesai** setelah order benar-benar dikirim.`
+            `👮‍♂️ Staff/Owner silakan klik **Proses Selesai** setelah orderan benar-benar dikirim.`
         ).catch(() => {});
       }
       // kalau bukan gambar: tidak dianggap bukti, timer tetap berjalan normal (tidak pause)
@@ -736,31 +739,43 @@ client.on("interactionCreate", async (i) => {
       saveOrders();
 
       await i.reply({ embeds: [buildSeaBankInstructions(order)] });
-      await i.channel.send("📌 Setelah transfer, kirim **bukti pembayaran (gambar/ss)** di sini.").catch(() => {});
+      await i.channel.send("📌 Setelah transfer, kirim **bukti pembayaran (gambar/ss)** di sini. Jika dalam **30 Menit** tidak kirim bukti pembayaran, order akan di close.").catch(() => {});
       return;
     }
 
     // CANCEL ORDER (customer) -> close ticket
     if (key === "ob_cancel_user") {
-      const member = await i.guild.members.fetch(i.user.id).catch(() => null);
-      const allowed = i.user.id === order.userId || isStaff(member);
-      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+  const member = await i.guild.members.fetch(i.user.id).catch(() => null);
+  const allowed = i.user.id === order.userId || isStaff(member);
+  if (!allowed) {
+    return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+  }
 
-      order.status = "CANCELLED";
-      order.cancelledAt = nowIso();
-      order.autoCloseEnabled = false; // already closing
-      order.autoClosePaused = false;
-      orders.set(order.orderId, order);
-      saveOrders();
+  order.status = "CANCELLED";
+  order.cancelledAt = nowIso();
+  order.autoCloseEnabled = false;
+  order.autoClosePaused = false;
 
-      await i.reply({ content: "❌ Order dibatalkan. Ticket ditutup.", ephemeral: true });
-      await lockTicketChannel(
-        i.channel,
-        order,
-        "❌ Order dibatalkan. Ticket ditutup (locked)."
-      );
-      return;
+  orders.set(order.orderId, order);
+  saveOrders();
+
+  await i.reply({
+    content: "❌ Order ditutup. Ticket akan dihapus dalam 3 detik...",
+    ephemeral: true,
+  });
+
+  await i.channel.send("❌ Order ditutup oleh user. Ticket akan dihapus...").catch(() => {});
+
+  setTimeout(async () => {
+    try {
+      await i.channel.delete("Order dibatalkan.");
+    } catch (err) {
+      console.error("Delete ticket error:", err);
     }
+  }, 3000);
+
+  return;
+}
 
     // CLOSE TICKET (ineligible)
     if (key === "ob_close_ineligible") {
