@@ -302,9 +302,13 @@ function buildOrderModal() {
 }
 
 function buildCustomerStatusEmbed(order) {
-  const days = Number.isFinite(order.robloxDaysInGroup) ? order.robloxDaysInGroup : 0;
-  const joinLine =
-    order.robloxJoinTime ? fmtDateID(order.robloxJoinTime) : "-";
+  const days = Number.isFinite(order.robloxDaysInGroup)
+    ? order.robloxDaysInGroup
+    : 0;
+
+  const joinLine = order.robloxJoinTime
+    ? fmtDateID(order.robloxJoinTime)
+    : "-";
 
   const eligibleLine = order.robloxEligible
     ? `✅ Eligible — **${days}/${ELIGIBLE_DAYS} hari**`
@@ -312,8 +316,10 @@ function buildCustomerStatusEmbed(order) {
 
   const desc = order.robloxEligible
     ? [
-        `**Status Join Community:** ${eligibleLine}`,
-        `**Tanggal Join:** ${joinLine}`,
+        `👤 **Username Roblox:** \`${order.robloxUsername}\``,
+        "",
+        `📊 **Status Join Community:** ${eligibleLine}`,
+        `📅 **Tanggal Join:** ${joinLine}`,
         "",
         `💎 **Total Robux:** ${fmtIDR(order.qty)}`,
         `💰 **Total Harga:** Rp ${fmtIDR(order.total)}`,
@@ -322,10 +328,12 @@ function buildCustomerStatusEmbed(order) {
         "Setelah transfer, kirim **bukti pembayaran (gambar)** di ticket ini.",
       ].join("\n")
     : [
-        `**Status Join Community:** ${eligibleLine}`,
-        `**Tanggal Join:** ${joinLine}`,
+        `👤 **Username Roblox:** \`${order.robloxUsername}\``,
         "",
-        `Alasan: ${order.ineligibleReason || "Tidak memenuhi syarat."}`,
+        `📊 **Status Join Community:** ${eligibleLine}`,
+        `📅 **Tanggal Join:** ${joinLine}`,
+        "",
+        `⚠️ Alasan: ${order.ineligibleReason || "Belum memenuhi syarat."}`,
         "",
         "Silakan join komunitas sampai memenuhi syarat, lalu order ulang.",
       ].join("\n");
@@ -333,7 +341,8 @@ function buildCustomerStatusEmbed(order) {
   return new EmbedBuilder()
     .setTitle(`OLENG BEACH — Ticket ${order.orderId}`)
     .setDescription(desc)
-    .setFooter({ text: "JANGAN TRANSFER sebelum instruksi pembayaran muncul." });
+    .setColor(order.robloxEligible ? 0x2ecc71 : 0xe74c3c)
+    .setFooter({ text: "OLENG BEACH Order System" });
 }
 
 function buildCustomerButtonsEligible(orderId) {
