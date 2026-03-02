@@ -265,7 +265,7 @@ function buildPanelEmbed() {
         "⚠️ **PENTING — JANGAN TRANSFER sebelum instruksi pembayaran muncul!**",
       ].join("\n")
     )
-    .setFooter({ text: "OLENG BEACH Order Robux System" });
+    .setFooter({ text: "OLENG BEACH — Order Robux System" });
 }
 
 function buildStockStatusButton() {
@@ -390,7 +390,7 @@ function buildCustomerStatusEmbed(order) {
     .setTitle(`OLENG BEACH — Ticket ${order.orderId}`)
     .setDescription(desc)
     .setColor(order.robloxEligible ? 0x2ecc71 : 0xe74c3c)
-    .setFooter({ text: "OLENG BEACH Order System" });
+    .setFooter({ text: "OLENG BEACH — Order System" });
 }
 
 function buildCustomerButtonsEligible(orderId) {
