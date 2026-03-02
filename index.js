@@ -869,15 +869,16 @@ return;
       });
 
       await i.channel.send(
-        `🎉 **ORDER BERHASIL DIKIRIM!** 🎉\n\n` +
-          `💎 Total Robux: **${fmtIDR(order.qty)}**\n` +
-          `💰 Total Bayar: **Rp ${fmtIDR(order.total)}**\n` +
-          `📅 Tanggal: **${tanggal}**\n` +
-          `⏰ Jam: **${jam} WIB**\n\n` +
-          `Silakan cek kembali Robux kamu.\n` +
-          `Jika ada kendala, silakan hubungi staff/owner.\n\n` +
-          `⏳ Ticket akan ditutup otomatis jika tidak ada aktivitas selama **${AUTO_CLOSE_MINUTES} menit**.`
-      ).catch(() => {});
+  `🎉 **ORDER BERHASIL DIKIRIM!** 🎉\n\n` +
+  `👤 Username Roblox: \`${order.robloxUsername}\`\n` +
+  `💎 Total Robux: **${fmtIDR(order.qty)}**\n` +
+  `💰 Total Bayar: **Rp ${fmtIDR(order.total)}**\n` +
+  `📅 Tanggal: **${tanggal}**\n` +
+  `⏰ Jam: **${jam} WIB**\n\n` +
+  `Silakan cek kembali Robux kamu.\n` +
+  `Jika ada kendala, silakan hubungi staff/owner.\n\n` +
+  `⏳ Ticket akan ditutup otomatis jika tidak ada aktivitas selama **${AUTO_CLOSE_MINUTES} menit**.`
+).catch(() => {});
       return;
     }
 
