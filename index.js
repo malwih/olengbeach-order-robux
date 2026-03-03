@@ -386,7 +386,11 @@ function buildPanelComponents() {
   const isReady = stockState.status === "READY";
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("ob_order_open_modal").setLabel("💸ORDER ROBUX").setStyle(ButtonStyle.Success).setDisabled(!isReady),
+      new ButtonBuilder()
+        .setCustomId("ob_order_open_modal")
+        .setLabel("💸ORDER ROBUX")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!isReady),
       buildStockStatusButton()
     ),
   ];
@@ -402,7 +406,9 @@ async function refreshPanelMessage(client) {
     const components = buildPanelComponents();
 
     const msgs = await channel.messages.fetch({ limit: 20 });
-    const existing = msgs.find((m) => m.author.id === client.user.id && m.embeds?.[0]?.title?.includes("ORDER ROBUX"));
+    const existing = msgs.find(
+      (m) => m.author.id === client.user.id && m.embeds?.[0]?.title?.includes("ORDER ROBUX")
+    );
 
     if (existing) await existing.edit({ embeds: [embed], components });
     else await channel.send({ embeds: [embed], components });
@@ -412,7 +418,9 @@ async function refreshPanelMessage(client) {
 }
 
 function buildOrderModal() {
-  const modal = new ModalBuilder().setCustomId("ob_order_modal_submit").setTitle("Order OLENG BEACH");
+  const modal = new ModalBuilder()
+    .setCustomId("ob_order_modal_submit")
+    .setTitle("Order OLENG BEACH");
 
   const username = new TextInputBuilder()
     .setCustomId("roblox_username")
@@ -420,7 +428,11 @@ function buildOrderModal() {
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
-  const qty = new TextInputBuilder().setCustomId("qty").setLabel("Jumlah (minimal 1000)").setStyle(TextInputStyle.Short).setRequired(true);
+  const qty = new TextInputBuilder()
+    .setCustomId("qty")
+    .setLabel("Jumlah (minimal 1000)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
 
   const note = new TextInputBuilder()
     .setCustomId("note")
@@ -428,7 +440,12 @@ function buildOrderModal() {
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
 
-  modal.addComponents(new ActionRowBuilder().addComponents(username), new ActionRowBuilder().addComponents(qty), new ActionRowBuilder().addComponents(note));
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(username),
+    new ActionRowBuilder().addComponents(qty),
+    new ActionRowBuilder().addComponents(note)
+  );
+
   return modal;
 }
 
@@ -471,27 +488,36 @@ function buildCustomerStatusEmbed(order) {
     .setFooter({ text: "OLENG BEACH — Order System" });
 }
 
-// BEFORE DONE: Bank + Cancel + Copy
+// BEFORE DONE: Bank + Cancel + Copy Username
 function buildCustomerButtonsEligible(orderId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ob_bank:${orderId}`).setLabel("🏦 Bank Transfer").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`ob_cancel_user:${orderId}`).setLabel("❌ Close Order").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder()
+        .setCustomId(`ob_bank:${orderId}`)
+        .setLabel("🏦 Bank Transfer")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`ob_cancel_user:${orderId}`)
+        .setLabel("❌ Close Order")
+        .setStyle(ButtonStyle.Danger)
     ),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ob_copy_username:${orderId}`).setLabel("📋 Copy Username").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder()
+        .setCustomId(`ob_copy_username:${orderId}`)
+        .setLabel("📋 Copy Username")
+        .setStyle(ButtonStyle.Secondary)
     ),
   ];
 }
 
-// AFTER DONE: Close Ticket only + Copy (optional keep)
+// AFTER DONE: Close Ticket only (NO copy username here)
 function buildButtonsAfterDone(orderId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ob_close_ticket:${orderId}`).setLabel("🔒 Close Ticket").setStyle(ButtonStyle.Danger)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ob_copy_username:${orderId}`).setLabel("📋 Copy Username").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder()
+        .setCustomId(`ob_close_ticket:${orderId}`)
+        .setLabel("🔒 Close Ticket")
+        .setStyle(ButtonStyle.Danger)
     ),
   ];
 }
@@ -499,7 +525,10 @@ function buildButtonsAfterDone(orderId) {
 function buildCustomerButtonsIneligible(orderId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ob_close_ineligible:${orderId}`).setLabel("🔒 Close Ticket").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder()
+        .setCustomId(`ob_close_ineligible:${orderId}`)
+        .setLabel("🔒 Close Ticket")
+        .setStyle(ButtonStyle.Danger)
     ),
   ];
 }
@@ -520,6 +549,18 @@ function buildSeaBankInstructions(order) {
       ].join("\n")
     )
     .setFooter({ text: "OLENG BEACH" });
+}
+
+// Button row for payment instruction: Copy Bank Number
+function buildPaymentButtons(orderId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`ob_copy_bank:${orderId}`)
+        .setLabel("📋 Copy No. Rekening")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
 }
 
 // ========= ACTIVITY / AUTO CLOSE =========
@@ -576,7 +617,11 @@ async function runAutoCloseSweep(client) {
         const guild = await client.guilds.fetch(order.guildId);
         const ch = await guild.channels.fetch(order.channelId).catch(() => null);
         if (!ch) continue;
-        await deleteTicketChannel(ch, order, `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Ticket akan dihapus...`);
+        await deleteTicketChannel(
+          ch,
+          order,
+          `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Ticket akan dihapus...`
+        );
       } catch (e) {
         console.error("Auto-close sweep error:", e);
       }
@@ -589,7 +634,12 @@ loadOrders();
 loadStock();
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
   partials: [Partials.Channel],
 });
 
@@ -605,7 +655,14 @@ client.once("ready", async () => {
       .setName("stok")
       .setDescription("Ubah status stock")
       .addStringOption((option) =>
-        option.setName("status").setDescription("Pilih status stock").setRequired(true).addChoices({ name: "ready", value: "READY" }, { name: "habis", value: "HABIS" })
+        option
+          .setName("status")
+          .setDescription("Pilih status stock")
+          .setRequired(true)
+          .addChoices(
+            { name: "ready", value: "READY" },
+            { name: "habis", value: "HABIS" }
+          )
       )
       .toJSON(),
 
@@ -613,10 +670,17 @@ client.once("ready", async () => {
       .setName("proses")
       .setDescription("Staff: proses order")
       .addStringOption((option) =>
-        option.setName("aksi").setDescription("Aksi proses").setRequired(true).addChoices({ name: "selesai", value: "SELESAI" })
+        option
+          .setName("aksi")
+          .setDescription("Aksi proses")
+          .setRequired(true)
+          .addChoices({ name: "selesai", value: "SELESAI" })
       )
       .addStringOption((option) =>
-        option.setName("order").setDescription("Order ID (contoh: T-12345). Kosongkan jika jalankan di dalam ticket.").setRequired(false)
+        option
+          .setName("order")
+          .setDescription("Order ID (contoh: T-12345). Kosongkan jika jalankan di dalam ticket.")
+          .setRequired(false)
       )
       .toJSON(),
   ]);
@@ -639,7 +703,9 @@ client.on("messageCreate", async (msg) => {
       const attachments = msg.attachments;
       if (!attachments || attachments.size === 0) return;
 
-      const hasImage = [...attachments.values()].some((a) => a.contentType && a.contentType.startsWith("image/"));
+      const hasImage = [...attachments.values()].some(
+        (a) => a.contentType && a.contentType.startsWith("image/")
+      );
 
       if (hasImage) {
         order.status = "PROOF_SUBMITTED";
@@ -652,7 +718,10 @@ client.on("messageCreate", async (msg) => {
         saveOrders();
 
         await msg.channel
-          .send(`✅ Bukti pembayaran diterima dari <@${order.userId}>.\n👮‍♂️ Staff/Owner akan proses Robux kamu, mohon bersedia menunggu...`)
+          .send(
+            `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
+              `👮‍♂️ Staff/Owner akan proses Robux kamu, mohon bersedia menunggu...`
+          )
           .catch(() => {});
       }
     }
@@ -725,9 +794,6 @@ client.on("interactionCreate", async (i) => {
       order.autoCloseEnabled = true;
       touchActivity(order, "staff_done_command");
 
-      // lock: after done, no more cancel
-      order.userCanCancel = false;
-
       orders.set(order.orderId, order);
       saveOrders();
 
@@ -737,7 +803,7 @@ client.on("interactionCreate", async (i) => {
 
       await i.reply({ content: `✅ Proses selesai untuk **${order.orderId}**.`, ephemeral: true });
 
-      // Update: send success message + show AFTER DONE buttons (Close Ticket only)
+      // Success message (NO Copy Username button here)
       await i.channel
         .send({
           content:
@@ -754,35 +820,46 @@ client.on("interactionCreate", async (i) => {
         })
         .catch(() => {});
 
-      // ===== Generate & Send Invoice =====
+      // ===== Generate invoice PDF =====
+      let pdfPath = null;
       try {
-        const pdfPath = await createInvoicePdf(order, i.user);
+        pdfPath = await createInvoicePdf(order, i.user);
         const fileName = path.basename(pdfPath);
 
         const invoiceFile = new AttachmentBuilder(pdfPath, { name: fileName });
         const invoiceEmbed = buildInvoiceEmbed(order);
 
-        const guild = await client.guilds.fetch(GUILD_ID);
-        const invCh = await guild.channels.fetch(INVOICE_CHANNEL_ID).catch(() => null);
+        // 1) Send to invoice channel (try/catch separate)
+        try {
+          const guild = await client.guilds.fetch(GUILD_ID);
+          const invCh = await guild.channels.fetch(INVOICE_CHANNEL_ID).catch(() => null);
 
-        if (invCh && invCh.type === ChannelType.GuildText) {
-          await invCh.send({
-            content: `🧾 Invoice baru: **${order.orderId}** | Customer: <@${order.userId}> | Roblox: \`${order.robloxUsername}\``,
-            embeds: [invoiceEmbed],
-            files: [invoiceFile],
-          });
+          if (invCh && invCh.type === ChannelType.GuildText) {
+            await invCh.send({
+              content: `🧾 Invoice baru: **${order.orderId}** | Customer: <@${order.userId}> | Roblox: \`${order.robloxUsername}\``,
+              embeds: [invoiceEmbed],
+              files: [invoiceFile],
+            });
+          }
+        } catch (eInv) {
+          console.error("Invoice channel send error:", eInv?.stack || eInv);
+          // jangan stop proses
         }
 
+        // 2) Send to ticket (tetap kirim)
         await i.channel.send({
           content: `🧾 Invoice untuk order **${order.orderId}** (silakan download PDF di bawah).`,
           embeds: [invoiceEmbed],
           files: [invoiceFile],
         });
 
-        fs.unlink(pdfPath, () => {});
       } catch (e) {
-        console.error("Invoice generate/send error:", e);
-        await i.channel.send("⚠️ Proses selesai, tapi gagal membuat/mengirim invoice PDF. Cek log bot.").catch(() => {});
+        console.error("Invoice generate/send error:", e?.stack || e);
+        await i.channel
+          .send(`⚠️ Proses selesai, tapi gagal membuat/mengirim invoice PDF.\n**Error:** \`${String(e?.message || e)}\``)
+          .catch(() => {});
+      } finally {
+        if (pdfPath) fs.unlink(pdfPath, () => {});
       }
 
       return;
@@ -865,7 +942,9 @@ client.on("interactionCreate", async (i) => {
         });
       } catch (e) {
         console.error("Ticket create error:", e);
-        return i.editReply("Gagal membuat ticket. Cek permission bot di **Category Ticket** (Manage Channels, View Channel, Send Messages).");
+        return i.editReply(
+          "Gagal membuat ticket. Cek permission bot di **Category Ticket** (Manage Channels, View Channel, Send Messages)."
+        );
       }
 
       const order = {
@@ -891,12 +970,6 @@ client.on("interactionCreate", async (i) => {
         lastActivityAt: nowIso(),
         autoCloseEnabled: true,
         autoClosePaused: false,
-
-        // before done can cancel
-        userCanCancel: true,
-
-        // invoice state
-        invoiceSentAt: null,
       };
 
       orders.set(orderId, order);
@@ -937,10 +1010,18 @@ client.on("interactionCreate", async (i) => {
     const orderId = parts[1] || parts[2];
     const order = orderId ? orders.get(orderId) : null;
 
-    const needsOrder = ["ob_bank", "ob_cancel_user", "ob_close_ineligible", "ob_copy_username", "ob_close_ticket"];
+    const needsOrder = [
+      "ob_bank",
+      "ob_cancel_user",
+      "ob_close_ineligible",
+      "ob_copy_username",
+      "ob_close_ticket",
+      "ob_copy_bank",
+    ];
     if (needsOrder.includes(key)) {
       if (!order) return i.reply({ content: "Order tidak ditemukan.", ephemeral: true });
-      if (i.channelId !== order.channelId) return i.reply({ content: "Tombol ini hanya valid di ticket ini.", ephemeral: true });
+      if (i.channelId !== order.channelId)
+        return i.reply({ content: "Tombol ini hanya valid di ticket ini.", ephemeral: true });
     }
 
     // COPY USERNAME
@@ -951,6 +1032,18 @@ client.on("interactionCreate", async (i) => {
 
       return i.reply({
         content: `📋 Copy username berikut:\n\`\`\`\n${order.robloxUsername}\n\`\`\``,
+        ephemeral: true,
+      });
+    }
+
+    // COPY BANK NUMBER (SEABANK_ACCOUNT)
+    if (key === "ob_copy_bank") {
+      const member = await i.guild.members.fetch(i.user.id).catch(() => null);
+      const allowed = i.user.id === order.userId || isStaff(member);
+      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+
+      return i.reply({
+        content: `🏦 Copy nomor rekening berikut:\n\`\`\`\n${SEABANK_ACCOUNT}\n\`\`\``,
         ephemeral: true,
       });
     }
@@ -969,9 +1062,16 @@ client.on("interactionCreate", async (i) => {
       orders.set(order.orderId, order);
       saveOrders();
 
-      await i.reply({ embeds: [buildSeaBankInstructions(order)] });
+      // IMPORTANT: include Copy Bank button here
+      await i.reply({
+        embeds: [buildSeaBankInstructions(order)],
+        components: buildPaymentButtons(order.orderId),
+      });
+
       await i.channel
-        .send("📌 Setelah transfer, kirim **bukti pembayaran (gambar/ss)** di sini. Jika dalam **30 Menit** tidak kirim bukti pembayaran, order akan di close.")
+        .send(
+          "📌 Setelah transfer, kirim **bukti pembayaran (gambar/ss)** di sini. Jika dalam **30 Menit** tidak kirim bukti pembayaran, order akan di close."
+        )
         .catch(() => {});
       return;
     }
@@ -982,16 +1082,17 @@ client.on("interactionCreate", async (i) => {
       const allowed = i.user.id === order.userId || isStaff(member);
       if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
 
-      // If already DONE, don't allow cancel. Tell user to close ticket instead.
       if (order.status === "DONE") {
-        return i.reply({ content: "Order sudah **DONE**. Tidak bisa cancel. Silakan gunakan tombol **Close Ticket**.", ephemeral: true });
+        return i.reply({
+          content: "Order sudah **DONE**. Tidak bisa cancel. Silakan gunakan tombol **Close Ticket**.",
+          ephemeral: true,
+        });
       }
 
       order.status = "CANCELLED";
       order.cancelledAt = nowIso();
       order.autoCloseEnabled = false;
       order.autoClosePaused = false;
-      order.userCanCancel = false;
 
       orders.set(order.orderId, order);
       saveOrders();
@@ -1001,15 +1102,17 @@ client.on("interactionCreate", async (i) => {
       return;
     }
 
-    // CLOSE TICKET (AFTER DONE) -> close only, do NOT mark cancelled
+    // CLOSE TICKET (AFTER DONE)
     if (key === "ob_close_ticket") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       const allowed = i.user.id === order.userId || isStaff(member);
       if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk ticket ini.", ephemeral: true });
 
-      // Only allow if DONE (or staff anyway)
       if (order.status !== "DONE" && !isStaff(member)) {
-        return i.reply({ content: "Ticket ini belum DONE. Jika mau batal, gunakan tombol **Close Order**.", ephemeral: true });
+        return i.reply({
+          content: "Ticket ini belum DONE. Jika mau batal, gunakan tombol **Close Order**.",
+          ephemeral: true,
+        });
       }
 
       await i.reply({ content: "🔒 Ticket akan dihapus dalam 3 detik...", ephemeral: true });
@@ -1036,7 +1139,7 @@ client.on("interactionCreate", async (i) => {
       return;
     }
   } catch (e) {
-    console.error("interaction error:", e);
+    console.error("interaction error:", e?.stack || e);
     if (i.deferred || i.replied) {
       await i.followUp({ content: "Terjadi error. Coba lagi.", ephemeral: true }).catch(() => {});
     } else {
