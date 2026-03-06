@@ -26,12 +26,10 @@ const GUILD_ID = process.env.GUILD_ID;
 const PANEL_CHANNEL_ID = process.env.PANEL_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
-const INVOICE_CHANNEL_ID = process.env.INVOICE_CHANNEL_ID; // required
+const INVOICE_CHANNEL_ID = process.env.INVOICE_CHANNEL_ID;
 
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
 const ROBLOX_GROUP_ID = 819348691;
-
-// ✅ Required: cookie for fetching group funds
 const ROBLOX_COOKIE = process.env.ROBLOX_COOKIE;
 
 const SEABANK_ACCOUNT = process.env.SEABANK_ACCOUNT || "ISI_REKENING";
@@ -39,13 +37,10 @@ const SEABANK_NAME = process.env.SEABANK_NAME || "ISI_NAMA_REKENING";
 
 const ELIGIBLE_DAYS = Number(process.env.ELIGIBLE_DAYS || 14);
 const PRICE_PER_1000 = Number(process.env.PRICE_PER_1000 || 100000);
-
 const AUTO_CLOSE_MINUTES = Number(process.env.AUTO_CLOSE_MINUTES || 30);
 
 const STORE_NAME = process.env.STORE_NAME || "OLENG BEACH";
 const STORE_FOOTER = process.env.STORE_FOOTER || "OLENG BEACH — Invoice System";
-
-// Stock refresh interval (minutes)
 const STOCK_REFRESH_MINUTES = Number(process.env.STOCK_REFRESH_MINUTES || 2);
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
@@ -68,7 +63,10 @@ function loadOrders() {
     const raw = fs.readFileSync(DATA_FILE, "utf-8");
     const arr = JSON.parse(raw);
     if (Array.isArray(arr)) {
-      for (const o of arr) orders.set(o.orderId, o);
+      for (const o of arr) {
+        normalizeLoadedOrder(o);
+        orders.set(o.orderId, o);
+      }
     }
   } catch (e) {
     console.error("Failed to load orders.json:", e);
@@ -81,6 +79,43 @@ function saveOrders() {
     fs.writeFileSync(DATA_FILE, JSON.stringify(arr, null, 2));
   } catch (e) {
     console.error("Failed to save orders.json:", e);
+  }
+}
+
+function normalizeLoadedOrder(order) {
+  if (!order) return;
+
+  // migrasi dari struktur lama
+  if (typeof order.autoCloseEnabled !== "boolean") {
+    order.autoCloseEnabled = !["CLOSED", "CANCELLED", "EXPIRED", "INELIGIBLE"].includes(order.status);
+  }
+
+  if (!order.lastActivityAt) {
+    order.lastActivityAt = order.createdAt || nowIso();
+  }
+
+  if (typeof order.autoClosePaused !== "boolean") {
+    order.autoClosePaused = false;
+  }
+
+  // kalau order lama masih pakai paused + lastActivityAt, kita konversi sebaik mungkin
+  if (!order.autoCloseDeadlineAt && order.autoCloseEnabled) {
+    if (order.status === "AWAITING_PAYMENT" || order.status === "AWAITING_PROOF" || order.status === "DONE") {
+      const base = order.lastActivityAt || order.createdAt || nowIso();
+      order.autoCloseDeadlineAt = new Date(
+        new Date(base).getTime() + AUTO_CLOSE_MINUTES * 60 * 1000
+      ).toISOString();
+    }
+  }
+
+  // PROOF_SUBMITTED memang jangan auto close
+  if (order.status === "PROOF_SUBMITTED") {
+    order.autoCloseDeadlineAt = null;
+  }
+
+  if (["CLOSED", "CANCELLED", "EXPIRED", "INELIGIBLE"].includes(order.status)) {
+    order.autoCloseEnabled = false;
+    order.autoCloseDeadlineAt = null;
   }
 }
 
@@ -113,6 +148,38 @@ function isStaff(member) {
 function computeTotal(qty) {
   const blocks = qty / 1000;
   return Math.round(blocks * PRICE_PER_1000);
+}
+
+// ========= AUTO CLOSE HELPERS =========
+function touchActivity(order, reason = "activity") {
+  order.lastActivityAt = nowIso();
+  order.lastActivityReason = reason;
+  orders.set(order.orderId, order);
+  saveOrders();
+}
+
+function setAutoCloseDeadline(order, minutes = AUTO_CLOSE_MINUTES, reason = "set_deadline") {
+  order.autoCloseEnabled = true;
+  order.autoClosePaused = false;
+  order.autoCloseReason = reason;
+  order.autoCloseDeadlineAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+  touchActivity(order, `autoclose:${reason}`);
+}
+
+function bumpAutoCloseDeadline(order, minutes = AUTO_CLOSE_MINUTES, reason = "bump_deadline") {
+  order.autoCloseEnabled = true;
+  order.autoClosePaused = false;
+  order.autoCloseReason = reason;
+  order.autoCloseDeadlineAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+  touchActivity(order, `autoclose:${reason}`);
+}
+
+function clearAutoCloseDeadline(order, reason = "clear_deadline") {
+  order.autoCloseEnabled = false;
+  order.autoClosePaused = false;
+  order.autoCloseReason = reason;
+  order.autoCloseDeadlineAt = null;
+  touchActivity(order, `autoclose:${reason}`);
 }
 
 // ========= ROBLOX HELPERS =========
@@ -243,7 +310,9 @@ async function robloxGetGroupFunds(groupId) {
 
   const json = await r.json();
   const robux = Number(json?.robux);
-  if (!Number.isFinite(robux)) throw new Error("Roblox group funds invalid response (missing robux).");
+  if (!Number.isFinite(robux)) {
+    throw new Error("Roblox group funds invalid response (missing robux).");
+  }
   return robux;
 }
 
@@ -324,7 +393,7 @@ function createInvoicePdf(order, staffUser) {
 
       doc.fontSize(20).text(`${STORE_NAME}`, { align: "left" });
       doc.moveDown(0.2);
-      doc.fontSize(10).text(`Invoice / Bukti Pembelian`, { align: "left" });
+      doc.fontSize(10).text("Invoice / Bukti Pembelian", { align: "left" });
       doc.moveDown(1);
 
       const createdAt = order.doneAt || nowIso();
@@ -358,7 +427,11 @@ function createInvoicePdf(order, staffUser) {
       doc.moveDown(0.8);
 
       doc.fontSize(10).text(
-        ["Catatan:", "• Simpan invoice ini sebagai bukti pembelian.", "• Jika ada kendala, hubungi staff/owner dan sertakan Order ID."].join(os.EOL)
+        [
+          "Catatan:",
+          "• Simpan invoice ini sebagai bukti pembelian.",
+          "• Jika ada kendala, hubungi staff/owner dan sertakan Order ID.",
+        ].join(os.EOL)
       );
 
       doc.moveDown(1.2);
@@ -401,9 +474,10 @@ function buildPanelEmbed() {
     ? `**STOK SEKARANG:** ${fmtIDR(stockCache.available)} Robux`
     : `**STOK SEKARANG:** (gagal fetch)`;
 
-  const stockWarn = stockCache.ok && stockCache.available < 1000
-    ? "\n\n⛔ **Stock habis (saldo group < 1.000).**"
-    : "";
+  const stockWarn =
+    stockCache.ok && stockCache.available < 1000
+      ? "\n\n⛔ **Stock habis (saldo group < 1.000).**"
+      : "";
 
   const stockMeta = stockCache.ok
     ? `\n_Updated: ${fmtDateID(stockCache.updatedAt)} WIB_`
@@ -482,8 +556,11 @@ async function refreshPanelMessage(client) {
       (m) => m.author.id === client.user.id && m.embeds?.[0]?.title?.includes("ORDER ROBUX")
     );
 
-    if (existing) await existing.edit({ embeds: [embed], components });
-    else await channel.send({ embeds: [embed], components });
+    if (existing) {
+      await existing.edit({ embeds: [embed], components });
+    } else {
+      await channel.send({ embeds: [embed], components });
+    }
   } catch (e) {
     console.error("refreshPanelMessage error:", e);
   }
@@ -662,14 +739,7 @@ function buildGoToPanelButtonRow() {
   ];
 }
 
-// ========= ACTIVITY / AUTO CLOSE =========
-function touchActivity(order, reason = "activity") {
-  order.lastActivityAt = nowIso();
-  order.lastActivityReason = reason;
-  orders.set(order.orderId, order);
-  saveOrders();
-}
-
+// ========= CHANNEL CLOSE =========
 async function deleteTicketChannel(channel, order, reasonText, finalStatus = null) {
   try {
     const terminal = new Set(["DONE", "CANCELLED", "INELIGIBLE", "EXPIRED", "CLOSED"]);
@@ -682,11 +752,14 @@ async function deleteTicketChannel(channel, order, reasonText, finalStatus = nul
     order.closedAt = nowIso();
     order.autoCloseEnabled = false;
     order.autoClosePaused = false;
+    order.autoCloseDeadlineAt = null;
 
     orders.set(order.orderId, order);
     saveOrders();
 
-    if (reasonText) await channel.send(reasonText).catch(() => {});
+    if (reasonText) {
+      await channel.send(reasonText).catch(() => {});
+    }
 
     setTimeout(async () => {
       try {
@@ -694,8 +767,12 @@ async function deleteTicketChannel(channel, order, reasonText, finalStatus = nul
       } catch (e) {
         console.error("Failed to delete channel:", e);
         try {
-          await channel.permissionOverwrites.edit(order.userId, { SendMessages: false }).catch(() => {});
-          await channel.send("⚠️ Bot gagal menghapus channel (permission). Ticket dikunci sebagai fallback.").catch(() => {});
+          await channel.permissionOverwrites.edit(order.userId, {
+            SendMessages: false,
+          }).catch(() => {});
+          await channel
+            .send("⚠️ Bot gagal menghapus channel (permission). Ticket dikunci sebagai fallback.")
+            .catch(() => {});
         } catch {}
       }
     }, 3000);
@@ -712,74 +789,78 @@ async function deleteTicketChannel(channel, order, reasonText, finalStatus = nul
  * - PROOF_SUBMITTED  -> tidak auto close
  */
 async function runAutoCloseSweep(client) {
-  const cutoffMs = AUTO_CLOSE_MINUTES * 60 * 1000;
   const now = Date.now();
 
   for (const order of orders.values()) {
-    if (!order?.channelId) continue;
-    if (!order.autoCloseEnabled) continue;
-    if (order.autoClosePaused) continue;
+    try {
+      if (!order?.channelId) continue;
+      if (!order.autoCloseEnabled) continue;
+      if (!order.autoCloseDeadlineAt) continue;
 
-    // terminal states yang benar-benar tidak perlu diproses lagi
-    if (["CLOSED", "CANCELLED", "EXPIRED"].includes(order.status)) continue;
+      if (["CLOSED", "CANCELLED", "EXPIRED", "INELIGIBLE", "PROOF_SUBMITTED"].includes(order.status)) {
+        continue;
+      }
 
-    // PROOF_SUBMITTED sengaja tidak auto close
-    if (order.status === "PROOF_SUBMITTED") continue;
+      const deadline = new Date(order.autoCloseDeadlineAt).getTime();
+      if (!Number.isFinite(deadline)) continue;
+      if (now < deadline) continue;
 
-    const last = order.lastActivityAt ? new Date(order.lastActivityAt).getTime() : 0;
-    if (!last) continue;
+      const guild = await client.guilds.fetch(order.guildId).catch(() => null);
+      if (!guild) continue;
 
-    if (now - last >= cutoffMs) {
-      try {
-        const guild = await client.guilds.fetch(order.guildId);
-        const ch = await guild.channels.fetch(order.channelId).catch(() => null);
-        if (!ch) continue;
+      const ch = await guild.channels.fetch(order.channelId).catch(() => null);
+      if (!ch) {
+        order.autoCloseEnabled = false;
+        order.autoCloseDeadlineAt = null;
+        orders.set(order.orderId, order);
+        saveOrders();
+        continue;
+      }
 
-        if (order.status === "AWAITING_PAYMENT" || order.status === "AWAITING_PROOF") {
-          order.status = "EXPIRED";
-          order.expiredAt = nowIso();
-          order.autoCloseEnabled = false;
-          order.autoClosePaused = false;
+      if (order.status === "AWAITING_PAYMENT" || order.status === "AWAITING_PROOF") {
+        order.status = "EXPIRED";
+        order.expiredAt = nowIso();
+        order.autoCloseEnabled = false;
+        order.autoCloseDeadlineAt = null;
 
-          orders.set(order.orderId, order);
-          saveOrders();
+        orders.set(order.orderId, order);
+        saveOrders();
 
-          await refreshStockCache().catch(() => {});
-          await refreshPanelMessage(client).catch(() => {});
+        await refreshStockCache().catch(() => {});
+        await refreshPanelMessage(client).catch(() => {});
 
-          const msg =
-            `⌛ Ticket expired otomatis (tidak ada aktivitas selama ${AUTO_CLOSE_MINUTES} menit). ` +
-            `Order dibatalkan, stok dikembalikan. Ticket akan dihapus...`;
+        const msg =
+          `⌛ Ticket expired otomatis karena tidak ada aktivitas selama ${AUTO_CLOSE_MINUTES} menit. ` +
+          `Order dibatalkan, stok dikembalikan. Ticket akan dihapus...`;
 
-          await deleteTicketChannel(ch, order, msg, "EXPIRED");
-          continue;
-        }
+        await deleteTicketChannel(ch, order, msg, "EXPIRED");
+        continue;
+      }
 
-        if (order.status === "DONE") {
-          await deleteTicketChannel(
-            ch,
-            order,
-            `🔒 Ticket ditutup otomatis setelah order selesai karena tidak ada aktivitas selama ${AUTO_CLOSE_MINUTES} menit. Ticket akan dihapus...`,
-            "CLOSED"
-          );
-
-          await refreshStockCache().catch(() => {});
-          await refreshPanelMessage(client).catch(() => {});
-          continue;
-        }
-
+      if (order.status === "DONE") {
         await deleteTicketChannel(
           ch,
           order,
-          `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Ticket akan dihapus...`,
+          `🔒 Ticket ditutup otomatis setelah order selesai karena tidak ada aktivitas selama ${AUTO_CLOSE_MINUTES} menit. Ticket akan dihapus...`,
           "CLOSED"
         );
 
         await refreshStockCache().catch(() => {});
         await refreshPanelMessage(client).catch(() => {});
-      } catch (e) {
-        console.error("Auto-close sweep error:", e);
+        continue;
       }
+
+      await deleteTicketChannel(
+        ch,
+        order,
+        `🔒 Ticket ditutup otomatis (inactivity ${AUTO_CLOSE_MINUTES} menit). Ticket akan dihapus...`,
+        "CLOSED"
+      );
+
+      await refreshStockCache().catch(() => {});
+      await refreshPanelMessage(client).catch(() => {});
+    } catch (e) {
+      console.error("Auto-close sweep error:", e);
     }
   }
 }
@@ -809,10 +890,17 @@ client.once("ready", async () => {
       .setName("proses")
       .setDescription("Staff: proses order")
       .addStringOption((option) =>
-        option.setName("aksi").setDescription("Aksi proses").setRequired(true).addChoices({ name: "selesai", value: "SELESAI" })
+        option
+          .setName("aksi")
+          .setDescription("Aksi proses")
+          .setRequired(true)
+          .addChoices({ name: "selesai", value: "SELESAI" })
       )
       .addStringOption((option) =>
-        option.setName("order").setDescription("Order ID (contoh: T-12345). Kosongkan jika jalankan di dalam ticket.").setRequired(false)
+        option
+          .setName("order")
+          .setDescription("Order ID (contoh: T-12345). Kosongkan jika jalankan di dalam ticket.")
+          .setRequired(false)
       )
       .toJSON(),
 
@@ -861,40 +949,34 @@ client.on("messageCreate", async (msg) => {
 
     const isCustomer = msg.author.id === order.userId;
 
-    // Customer message behavior by status
-    if (isCustomer) {
-      if (order.status === "AWAITING_PAYMENT" || order.status === "AWAITING_PROOF") {
-        // selama nunggu bayar / bukti, customer message pause timer
-        order.autoClosePaused = true;
-        touchActivity(order, "user_message_pause_autoclose");
-      } else if (order.status === "DONE") {
-        // setelah DONE, customer chat reset inactivity timer tapi jangan pause permanen
-        order.autoClosePaused = false;
-        touchActivity(order, "user_message_after_done");
-      } else {
-        touchActivity(order, "user_message");
-      }
+    // activity tracking umum
+    touchActivity(order, isCustomer ? "customer_message" : "staff_or_other_message");
 
+    // kalau status DONE, setiap chat baru refresh deadline 30 menit lagi
+    if (order.status === "DONE") {
+      bumpAutoCloseDeadline(order, AUTO_CLOSE_MINUTES, "message_after_done");
       orders.set(order.orderId, order);
       saveOrders();
-    } else {
-      // staff / other user message
-      if (order.status === "DONE") {
-        order.autoClosePaused = false;
-      }
-      touchActivity(order, "non_customer_message");
+      return;
+    }
+
+    // saat masih nunggu bayar / bukti, setiap pesan customer/staff boleh refresh deadline
+    if (order.status === "AWAITING_PAYMENT" || order.status === "AWAITING_PROOF") {
+      bumpAutoCloseDeadline(order, AUTO_CLOSE_MINUTES, "message_before_done");
       orders.set(order.orderId, order);
       saveOrders();
     }
 
-    // Proof submission
+    // proof submission
     if (order.status === "AWAITING_PROOF" && isCustomer) {
       const hasAnyAttachment = msg.attachments && msg.attachments.size > 0;
       if (!hasAnyAttachment) return;
 
       order.status = "PROOF_SUBMITTED";
       order.proofSubmittedAt = nowIso();
-      order.autoClosePaused = true;
+      order.autoCloseEnabled = false;
+      order.autoClosePaused = false;
+      order.autoCloseDeadlineAt = null;
 
       touchActivity(order, "proof_any_file_submitted");
 
@@ -907,8 +989,8 @@ client.on("messageCreate", async (msg) => {
       await msg.channel
         .send(
           `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
-            `📎 Tipe bukti: **file/forward**\n` +
-            `👮‍♂️ Staff/Owner akan proses Robux kamu, mohon bersedia menunggu...`
+          `📎 Tipe bukti: **file/forward**\n` +
+          `👮‍♂️ Staff/Owner akan proses Robux kamu, mohon bersedia menunggu...`
         )
         .catch(() => {});
     }
@@ -921,12 +1003,17 @@ client.on("interactionCreate", async (i) => {
   try {
     if (i.isChatInputCommand() && i.commandName === "broadcast") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
-      if (!isStaff(member)) return i.reply({ content: "Khusus staff/owner.", ephemeral: true });
+      if (!isStaff(member)) {
+        return i.reply({ content: "Khusus staff/owner.", ephemeral: true });
+      }
 
       const tipe = i.options.getString("tipe");
       const target = i.options.getChannel("channel");
 
-      if (tipe !== "STOCK_READY") return i.reply({ content: "Tipe broadcast tidak valid.", ephemeral: true });
+      if (tipe !== "STOCK_READY") {
+        return i.reply({ content: "Tipe broadcast tidak valid.", ephemeral: true });
+      }
+
       if (!target || (target.type !== ChannelType.GuildText && target.type !== ChannelType.GuildAnnouncement)) {
         return i.reply({ content: "Channel tidak valid (harus text/announcement).", ephemeral: true });
       }
@@ -953,18 +1040,24 @@ client.on("interactionCreate", async (i) => {
 
     if (i.isChatInputCommand() && i.commandName === "proses") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
-      if (!isStaff(member)) return i.reply({ content: "Khusus staff/owner.", ephemeral: true });
+      if (!isStaff(member)) {
+        return i.reply({ content: "Khusus staff/owner.", ephemeral: true });
+      }
 
       const aksi = i.options.getString("aksi");
       const orderArg = i.options.getString("order");
       const channelId = i.channelId;
 
-      if (aksi !== "SELESAI") return i.reply({ content: "Aksi tidak valid.", ephemeral: true });
+      if (aksi !== "SELESAI") {
+        return i.reply({ content: "Aksi tidak valid.", ephemeral: true });
+      }
 
       let order = null;
       if (orderArg) {
         order = orders.get(orderArg);
-        if (!order) return i.reply({ content: "Order ID tidak ditemukan.", ephemeral: true });
+        if (!order) {
+          return i.reply({ content: "Order ID tidak ditemukan.", ephemeral: true });
+        }
       } else {
         order = Array.from(orders.values()).find((o) => o.channelId === channelId);
         if (!order) {
@@ -988,9 +1081,7 @@ client.on("interactionCreate", async (i) => {
 
       order.status = "DONE";
       order.doneAt = nowIso();
-      order.autoClosePaused = false;
-      order.autoCloseEnabled = true;
-      touchActivity(order, "staff_done_command");
+      setAutoCloseDeadline(order, AUTO_CLOSE_MINUTES, "staff_done_command");
 
       orders.set(order.orderId, order);
       saveOrders();
@@ -1081,8 +1172,12 @@ client.on("interactionCreate", async (i) => {
       const note = i.fields.getTextInputValue("note")?.trim();
 
       const qty = Number(String(qtyRaw || "").replace(/[^\d]/g, ""));
-      if (!Number.isFinite(qty) || qty < 1000) return i.editReply("Jumlah minimal 1000.");
-      if (qty % 1000 !== 0) return i.editReply("Jumlah harus kelipatan 1000 (contoh: 1000 / 2000 / 3000).");
+      if (!Number.isFinite(qty) || qty < 1000) {
+        return i.editReply("Jumlah minimal 1000.");
+      }
+      if (qty % 1000 !== 0) {
+        return i.editReply("Jumlah harus kelipatan 1000 (contoh: 1000 / 2000 / 3000).");
+      }
 
       await refreshStockCache();
       await refreshPanelMessage(client).catch(() => {});
@@ -1182,8 +1277,11 @@ client.on("interactionCreate", async (i) => {
         paymentMethod: "SEABANK",
         createdAt: nowIso(),
         lastActivityAt: nowIso(),
-        autoCloseEnabled: true,
+        autoCloseEnabled: Boolean(eligibility.ok),
         autoClosePaused: false,
+        autoCloseDeadlineAt: eligibility.ok
+          ? new Date(Date.now() + AUTO_CLOSE_MINUTES * 60 * 1000).toISOString()
+          : null,
       };
 
       orders.set(orderId, order);
@@ -1203,7 +1301,9 @@ client.on("interactionCreate", async (i) => {
           })
           .catch(() => {});
 
-        if (order.note) await ticket.send({ content: `📝 Catatan: ${order.note}` }).catch(() => {});
+        if (order.note) {
+          await ticket.send({ content: `📝 Catatan: ${order.note}` }).catch(() => {});
+        }
       } else {
         await ticket
           .send({
@@ -1234,16 +1334,20 @@ client.on("interactionCreate", async (i) => {
       "ob_close_ticket",
       "ob_copy_bank",
     ];
+
     if (needsOrder.includes(key)) {
       if (!order) return i.reply({ content: "Order tidak ditemukan.", ephemeral: true });
-      if (i.channelId !== order.channelId)
+      if (i.channelId !== order.channelId) {
         return i.reply({ content: "Tombol ini hanya valid di ticket ini.", ephemeral: true });
+      }
     }
 
     if (key === "ob_copy_username") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       const allowed = i.user.id === order.userId || isStaff(member);
-      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      if (!allowed) {
+        return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      }
 
       return i.reply({
         content: `📋 Copy username berikut:\n\`\`\`\n${order.robloxUsername}\n\`\`\``,
@@ -1254,7 +1358,9 @@ client.on("interactionCreate", async (i) => {
     if (key === "ob_copy_bank") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       const allowed = i.user.id === order.userId || isStaff(member);
-      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      if (!allowed) {
+        return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      }
 
       return i.reply({
         content: `🏦 Copy nomor rekening berikut:\n\`\`\`\n${SEABANK_ACCOUNT}\n\`\`\``,
@@ -1263,15 +1369,18 @@ client.on("interactionCreate", async (i) => {
     }
 
     if (key === "ob_bank") {
-      if (!order.robloxEligible) return i.reply({ content: "Order ini tidak eligible.", ephemeral: true });
+      if (!order.robloxEligible) {
+        return i.reply({ content: "Order ini tidak eligible.", ephemeral: true });
+      }
 
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       const allowed = i.user.id === order.userId || isStaff(member);
-      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      if (!allowed) {
+        return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      }
 
       order.status = "AWAITING_PROOF";
-      order.autoClosePaused = false;
-      touchActivity(order, "bank_transfer_clicked");
+      setAutoCloseDeadline(order, AUTO_CLOSE_MINUTES, "bank_transfer_clicked");
       orders.set(order.orderId, order);
       saveOrders();
 
@@ -1295,7 +1404,9 @@ client.on("interactionCreate", async (i) => {
     if (key === "ob_cancel_user") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       const allowed = i.user.id === order.userId || isStaff(member);
-      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      if (!allowed) {
+        return i.reply({ content: "Kamu tidak punya akses untuk order ini.", ephemeral: true });
+      }
 
       if (order.status === "DONE") {
         return i.reply({
@@ -1308,6 +1419,7 @@ client.on("interactionCreate", async (i) => {
       order.cancelledAt = nowIso();
       order.autoCloseEnabled = false;
       order.autoClosePaused = false;
+      order.autoCloseDeadlineAt = null;
 
       orders.set(order.orderId, order);
       saveOrders();
@@ -1323,7 +1435,9 @@ client.on("interactionCreate", async (i) => {
     if (key === "ob_close_ticket") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       const allowed = i.user.id === order.userId || isStaff(member);
-      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk ticket ini.", ephemeral: true });
+      if (!allowed) {
+        return i.reply({ content: "Kamu tidak punya akses untuk ticket ini.", ephemeral: true });
+      }
 
       if (order.status !== "DONE" && !isStaff(member)) {
         return i.reply({
@@ -1337,19 +1451,21 @@ client.on("interactionCreate", async (i) => {
 
       await refreshStockCache().catch(() => {});
       await refreshPanelMessage(client).catch(() => {});
-
       return;
     }
 
     if (key === "ob_close_ineligible") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       const allowed = i.user.id === order.userId || isStaff(member);
-      if (!allowed) return i.reply({ content: "Kamu tidak punya akses untuk ticket ini.", ephemeral: true });
+      if (!allowed) {
+        return i.reply({ content: "Kamu tidak punya akses untuk ticket ini.", ephemeral: true });
+      }
 
       order.status = "CLOSED";
       order.closedAt = nowIso();
       order.autoCloseEnabled = false;
       order.autoClosePaused = false;
+      order.autoCloseDeadlineAt = null;
 
       orders.set(order.orderId, order);
       saveOrders();
