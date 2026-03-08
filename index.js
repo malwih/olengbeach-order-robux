@@ -85,11 +85,6 @@ function saveOrders() {
 function normalizeLoadedOrder(order) {
   if (!order) return;
 
-  // migrasi dari struktur lama
-  if (typeof order.autoCloseEnabled !== "boolean") {
-    order.autoCloseEnabled = !["CLOSED", "CANCELLED", "EXPIRED", "INELIGIBLE"].includes(order.status);
-  }
-
   if (!order.lastActivityAt) {
     order.lastActivityAt = order.createdAt || nowIso();
   }
@@ -98,10 +93,24 @@ function normalizeLoadedOrder(order) {
     order.autoClosePaused = false;
   }
 
-  // kalau order lama masih pakai paused + lastActivityAt, kita konversi sebaik mungkin
+  // terminal status yang benar-benar tidak perlu auto close lagi
+  const fullyClosedStatuses = ["CLOSED", "CANCELLED", "EXPIRED"];
+
+  // migrasi default auto close
+  if (typeof order.autoCloseEnabled !== "boolean") {
+    order.autoCloseEnabled = !fullyClosedStatuses.includes(order.status);
+  }
+
+  // buat deadline jika order lama belum punya deadline
   if (!order.autoCloseDeadlineAt && order.autoCloseEnabled) {
-    if (order.status === "AWAITING_PAYMENT" || order.status === "AWAITING_PROOF" || order.status === "DONE") {
-      const base = order.lastActivityAt || order.createdAt || nowIso();
+    const base = order.lastActivityAt || order.createdAt || nowIso();
+
+    if (
+      order.status === "AWAITING_PAYMENT" ||
+      order.status === "AWAITING_PROOF" ||
+      order.status === "DONE" ||
+      order.status === "INELIGIBLE"
+    ) {
       order.autoCloseDeadlineAt = new Date(
         new Date(base).getTime() + AUTO_CLOSE_MINUTES * 60 * 1000
       ).toISOString();
@@ -110,10 +119,11 @@ function normalizeLoadedOrder(order) {
 
   // PROOF_SUBMITTED memang jangan auto close
   if (order.status === "PROOF_SUBMITTED") {
+    order.autoCloseEnabled = false;
     order.autoCloseDeadlineAt = null;
   }
 
-  if (["CLOSED", "CANCELLED", "EXPIRED", "INELIGIBLE"].includes(order.status)) {
+  if (fullyClosedStatuses.includes(order.status)) {
     order.autoCloseEnabled = false;
     order.autoCloseDeadlineAt = null;
   }
@@ -627,6 +637,7 @@ function buildCustomerStatusEmbed(order) {
         "",
         `⚠️ Alasan: ${order.ineligibleReason || "Belum memenuhi syarat."}`,
         "",
+        `⏳ Ticket ini akan otomatis ditutup setelah **${AUTO_CLOSE_MINUTES} menit** meskipun ada chat atau file yang dikirim.`,
         "Silakan join komunitas sampai memenuhi syarat, lalu order ulang.",
       ].join("\n");
 
@@ -786,6 +797,7 @@ async function deleteTicketChannel(channel, order, reasonText, finalStatus = nul
  * - AWAITING_PAYMENT  -> EXPIRED
  * - AWAITING_PROOF    -> EXPIRED
  * - DONE             -> CLOSED
+ * - INELIGIBLE       -> INELIGIBLE (channel ditutup otomatis)
  * - PROOF_SUBMITTED  -> tidak auto close
  */
 async function runAutoCloseSweep(client) {
@@ -797,7 +809,7 @@ async function runAutoCloseSweep(client) {
       if (!order.autoCloseEnabled) continue;
       if (!order.autoCloseDeadlineAt) continue;
 
-      if (["CLOSED", "CANCELLED", "EXPIRED", "INELIGIBLE", "PROOF_SUBMITTED"].includes(order.status)) {
+      if (["CLOSED", "CANCELLED", "EXPIRED", "PROOF_SUBMITTED"].includes(order.status)) {
         continue;
       }
 
@@ -834,6 +846,17 @@ async function runAutoCloseSweep(client) {
           `Order dibatalkan, stok dikembalikan. Ticket akan dihapus...`;
 
         await deleteTicketChannel(ch, order, msg, "EXPIRED");
+        continue;
+      }
+
+      if (order.status === "INELIGIBLE") {
+        await deleteTicketChannel(
+          ch,
+          order,
+          `🔒 Ticket ineligible ditutup otomatis setelah ${AUTO_CLOSE_MINUTES} menit. ` +
+            `Chat atau file yang dikirim tidak memperpanjang waktu ticket ini. Ticket akan dihapus...`,
+          "INELIGIBLE"
+        );
         continue;
       }
 
@@ -949,8 +972,14 @@ client.on("messageCreate", async (msg) => {
 
     const isCustomer = msg.author.id === order.userId;
 
-    // activity tracking umum
+    // tetap catat activity untuk log
     touchActivity(order, isCustomer ? "customer_message" : "staff_or_other_message");
+
+    // KHUSUS INELIGIBLE:
+    // apapun chat atau file yang dikirim, deadline JANGAN DI-RESET
+    if (order.status === "INELIGIBLE") {
+      return;
+    }
 
     // kalau status DONE, setiap chat baru refresh deadline 30 menit lagi
     if (order.status === "DONE") {
@@ -1277,11 +1306,11 @@ client.on("interactionCreate", async (i) => {
         paymentMethod: "SEABANK",
         createdAt: nowIso(),
         lastActivityAt: nowIso(),
-        autoCloseEnabled: Boolean(eligibility.ok),
+
+        // INELIGIBLE tetap auto close 30 menit
+        autoCloseEnabled: true,
         autoClosePaused: false,
-        autoCloseDeadlineAt: eligibility.ok
-          ? new Date(Date.now() + AUTO_CLOSE_MINUTES * 60 * 1000).toISOString()
-          : null,
+        autoCloseDeadlineAt: new Date(Date.now() + AUTO_CLOSE_MINUTES * 60 * 1000).toISOString(),
       };
 
       orders.set(orderId, order);
@@ -1307,7 +1336,9 @@ client.on("interactionCreate", async (i) => {
       } else {
         await ticket
           .send({
-            content: `Halo <@${user.id}> 👋\nKamu **belum memenuhi syarat** untuk order.`,
+            content:
+              `Halo <@${user.id}> 👋\nKamu **belum memenuhi syarat** untuk order.\n` +
+              `⏳ Ticket ini akan auto close dalam **${AUTO_CLOSE_MINUTES} menit** walaupun ada chat atau file yang dikirim.`,
             embeds: [statusEmbed],
             components: buildCustomerButtonsIneligible(orderId),
           })
