@@ -26,7 +26,6 @@ const GUILD_ID = process.env.GUILD_ID;
 const PANEL_CHANNEL_ID = process.env.PANEL_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
-const INVOICE_CHANNEL_ID = process.env.INVOICE_CHANNEL_ID;
 
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
 const ROBLOX_GROUP_ID = 819348691;
@@ -49,7 +48,6 @@ if (!PANEL_CHANNEL_ID) throw new Error("Missing PANEL_CHANNEL_ID");
 if (!TICKET_CATEGORY_ID) throw new Error("Missing TICKET_CATEGORY_ID");
 if (!STAFF_ROLE_ID) throw new Error("Missing STAFF_ROLE_ID");
 if (!ROBLOX_API_KEY) throw new Error("Missing ROBLOX_API_KEY");
-if (!INVOICE_CHANNEL_ID) throw new Error("Missing INVOICE_CHANNEL_ID");
 if (!ROBLOX_COOKIE) throw new Error("Missing ROBLOX_COOKIE (.ROBLOSECURITY)");
 
 // ========= STORAGE =========
@@ -93,15 +91,12 @@ function normalizeLoadedOrder(order) {
     order.autoClosePaused = false;
   }
 
-  // terminal status yang benar-benar tidak perlu auto close lagi
   const fullyClosedStatuses = ["CLOSED", "CANCELLED", "EXPIRED"];
 
-  // migrasi default auto close
   if (typeof order.autoCloseEnabled !== "boolean") {
     order.autoCloseEnabled = !fullyClosedStatuses.includes(order.status);
   }
 
-  // buat deadline jika order lama belum punya deadline
   if (!order.autoCloseDeadlineAt && order.autoCloseEnabled) {
     const base = order.lastActivityAt || order.createdAt || nowIso();
 
@@ -117,7 +112,6 @@ function normalizeLoadedOrder(order) {
     }
   }
 
-  // PROOF_SUBMITTED memang jangan auto close
   if (order.status === "PROOF_SUBMITTED") {
     order.autoCloseEnabled = false;
     order.autoCloseDeadlineAt = null;
@@ -897,6 +891,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
   ],
   partials: [Partials.Channel],
 });
@@ -972,16 +967,12 @@ client.on("messageCreate", async (msg) => {
 
     const isCustomer = msg.author.id === order.userId;
 
-    // tetap catat activity untuk log
     touchActivity(order, isCustomer ? "customer_message" : "staff_or_other_message");
 
-    // KHUSUS INELIGIBLE:
-    // apapun chat atau file yang dikirim, deadline JANGAN DI-RESET
     if (order.status === "INELIGIBLE") {
       return;
     }
 
-    // kalau status DONE, setiap chat baru refresh deadline 30 menit lagi
     if (order.status === "DONE") {
       bumpAutoCloseDeadline(order, AUTO_CLOSE_MINUTES, "message_after_done");
       orders.set(order.orderId, order);
@@ -989,14 +980,12 @@ client.on("messageCreate", async (msg) => {
       return;
     }
 
-    // saat masih nunggu bayar / bukti, setiap pesan customer/staff boleh refresh deadline
     if (order.status === "AWAITING_PAYMENT" || order.status === "AWAITING_PROOF") {
       bumpAutoCloseDeadline(order, AUTO_CLOSE_MINUTES, "message_before_done");
       orders.set(order.orderId, order);
       saveOrders();
     }
 
-    // proof submission
     if (order.status === "AWAITING_PROOF" && isCustomer) {
       const hasAnyAttachment = msg.attachments && msg.attachments.size > 0;
       if (!hasAnyAttachment) return;
@@ -1144,29 +1133,32 @@ client.on("interactionCreate", async (i) => {
       try {
         pdfPath = await createInvoicePdf(order, i.user);
         const fileName = path.basename(pdfPath);
-
-        const invoiceFile = new AttachmentBuilder(pdfPath, { name: fileName });
         const invoiceEmbed = buildInvoiceEmbed(order);
 
+        // Kirim invoice ke DM user
         try {
-          const guild = await client.guilds.fetch(GUILD_ID);
-          const invCh = await guild.channels.fetch(INVOICE_CHANNEL_ID).catch(() => null);
+          const customerUser = await client.users.fetch(order.userId);
+          const dmInvoiceFile = new AttachmentBuilder(pdfPath, { name: fileName });
 
-          if (invCh && (invCh.type === ChannelType.GuildText || invCh.type === ChannelType.GuildAnnouncement)) {
-            await invCh.send({
-              content: `🧾 Invoice baru: **${order.orderId}** | Customer: <@${order.userId}> | Roblox: \`${order.robloxUsername}\``,
-              embeds: [invoiceEmbed],
-              files: [invoiceFile],
-            });
-          }
-        } catch (eInv) {
-          console.error("Invoice channel send error:", eInv?.stack || eInv);
+          await customerUser.send({
+            content:
+              `Halo! Berikut invoice untuk order kamu di **${STORE_NAME}**.\n` +
+              `Order ID: **${order.orderId}**\n` +
+              `Diproses oleh: **${i.user.tag}**`,
+            embeds: [invoiceEmbed],
+            files: [dmInvoiceFile],
+          });
+        } catch (eDm) {
+          console.error("Invoice DM send error:", eDm?.stack || eDm);
         }
+
+        // Tetap kirim invoice ke channel ticket
+        const ticketInvoiceFile = new AttachmentBuilder(pdfPath, { name: fileName });
 
         await i.channel.send({
           content: `🧾 Invoice untuk order **${order.orderId}** (silakan download PDF di bawah).`,
           embeds: [invoiceEmbed],
-          files: [invoiceFile],
+          files: [ticketInvoiceFile],
         });
       } catch (e) {
         console.error("Invoice generate/send error:", e?.stack || e);
@@ -1307,7 +1299,6 @@ client.on("interactionCreate", async (i) => {
         createdAt: nowIso(),
         lastActivityAt: nowIso(),
 
-        // INELIGIBLE tetap auto close 30 menit
         autoCloseEnabled: true,
         autoClosePaused: false,
         autoCloseDeadlineAt: new Date(Date.now() + AUTO_CLOSE_MINUTES * 60 * 1000).toISOString(),
