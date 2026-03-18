@@ -24,6 +24,7 @@ import {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const PANEL_CHANNEL_ID = process.env.PANEL_CHANNEL_ID;
+const UPDATE_STOCK_CHANNEL_ID = process.env.UPDATE_STOCK_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
 
@@ -45,6 +46,7 @@ const STOCK_REFRESH_MINUTES = Number(process.env.STOCK_REFRESH_MINUTES || 2);
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
 if (!GUILD_ID) throw new Error("Missing GUILD_ID");
 if (!PANEL_CHANNEL_ID) throw new Error("Missing PANEL_CHANNEL_ID");
+if (!UPDATE_STOCK_CHANNEL_ID) throw new Error("Missing UPDATE_STOCK_CHANNEL_ID");
 if (!TICKET_CATEGORY_ID) throw new Error("Missing TICKET_CATEGORY_ID");
 if (!STAFF_ROLE_ID) throw new Error("Missing STAFF_ROLE_ID");
 if (!ROBLOX_API_KEY) throw new Error("Missing ROBLOX_API_KEY");
@@ -349,7 +351,15 @@ let stockCache = {
   error: null,
 };
 
+const stockBroadcastState = {
+  initialized: false,
+  lastAnnouncedAvailable: null,
+  lastAnnouncedMode: null, // READY | OUT
+};
+
 async function refreshStockCache() {
+  const previous = { ...stockCache };
+
   try {
     const groupFunds = await robloxGetGroupFunds(ROBLOX_GROUP_ID);
     const reserved = computeReservedRobux();
@@ -371,6 +381,11 @@ async function refreshStockCache() {
       error: String(e?.message || e),
     };
   }
+
+  return {
+    previous,
+    current: { ...stockCache },
+  };
 }
 
 function isStockReady() {
@@ -714,34 +729,141 @@ function buildPaymentButtons(orderId) {
   ];
 }
 
-// ========= BROADCAST =========
-function buildStockReadyBroadcastEmbed() {
-  return new EmbedBuilder()
-    .setTitle("🚨 STOCK ROBUX SUDAH READY LAGI! 🚨")
-    .setDescription(
-      [
-        "🔥 **Kabar gembira!** Stock Robux **SUDAH READY** dan bisa order sekarang!",
-        "",
-        "✅ **Fast response**",
-        "✅ **Via Community Payout**",
-        `✅ **Wajib join komunitas minimal ${ELIGIBLE_DAYS} hari**`,
-        "",
-        "⚡ Jangan sampai kehabisan lagi — klik tombol di bawah untuk langsung order!",
-      ].join("\n")
-    )
-    .setFooter({ text: "OLENG BEACH — Stock Alert" });
+// ========= AUTO BROADCAST =========
+function getPanelUrl() {
+  return `https://discord.com/channels/${GUILD_ID}/${PANEL_CHANNEL_ID}`;
 }
 
-function buildGoToPanelButtonRow() {
-  const panelUrl = `https://discord.com/channels/${GUILD_ID}/${PANEL_CHANNEL_ID}`;
+function buildStockReadyBroadcastEmbed(available) {
+  return new EmbedBuilder()
+    .setColor(0x00ff95)
+    .setTitle("💚✨ STOCK ROBUX READY SEKARANG ✨💚")
+    .setDescription(
+      [
+        "🚀 **UPDATE STOK MASUK!**",
+        "",
+        `💎 **Stok tersedia sekarang: ${fmtIDR(available)} Robux**`,
+        "",
+        "🔥 **Bisa langsung order sekarang**",
+        "⚡ **Fast response**",
+        "🎯 **Via Community Payout**",
+        `✅ **Wajib join komunitas minimal ${ELIGIBLE_DAYS} hari**`,
+        "",
+        `🛒 **Langsung order ke <#${PANEL_CHANNEL_ID}>**`,
+        "",
+        "❗ **Buruan order sebelum stok berubah lagi!**",
+      ].join("\n")
+    )
+    .setFooter({ text: "OLENG BEACH — Realtime Stock Update" })
+    .setTimestamp();
+}
+
+function buildStockOutBroadcastEmbed() {
+  return new EmbedBuilder()
+    .setColor(0xff2e63)
+    .setTitle("🚨⛔ STOCK ROBUX HABIS ⛔🚨")
+    .setDescription(
+      [
+        "😵 **Untuk saat ini stok Robux sedang habis.**",
+        "",
+        "📌 Tunggu update stok berikutnya di channel ini.",
+        "🔔 Kalau stok masuk lagi, bot akan langsung kasih info terbaru.",
+        "",
+        `🛒 Nanti kalau sudah ready lagi, langsung order di <#${PANEL_CHANNEL_ID}> ya.`,
+      ].join("\n")
+    )
+    .setFooter({ text: "OLENG BEACH — Realtime Stock Update" })
+    .setTimestamp();
+}
+
+function buildStockBroadcastButtons() {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setLabel("✅ OKE MAU ORDER")
+        .setLabel("🛒 ORDER ROBUX SEKARANG")
         .setStyle(ButtonStyle.Link)
-        .setURL(panelUrl)
+        .setURL(getPanelUrl())
     ),
   ];
+}
+
+async function sendAutoStockBroadcast(client, mode, available) {
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const channel = await guild.channels.fetch(UPDATE_STOCK_CHANNEL_ID);
+
+    if (!channel) return;
+    if (
+      channel.type !== ChannelType.GuildText &&
+      channel.type !== ChannelType.GuildAnnouncement
+    ) {
+      console.error("UPDATE_STOCK_CHANNEL_ID must be a text or announcement channel.");
+      return;
+    }
+
+    const payload =
+      mode === "OUT"
+        ? {
+            content: "🚨 @everyone",
+            embeds: [buildStockOutBroadcastEmbed()],
+            components: buildStockBroadcastButtons(),
+            allowedMentions: { parse: ["everyone"] },
+          }
+        : {
+            content: "🚨 @everyone",
+            embeds: [buildStockReadyBroadcastEmbed(available)],
+            components: buildStockBroadcastButtons(),
+            allowedMentions: { parse: ["everyone"] },
+          };
+
+    await channel.send(payload);
+  } catch (e) {
+    console.error("sendAutoStockBroadcast error:", e);
+  }
+}
+
+async function maybeBroadcastStockChange(client, refreshResult, options = {}) {
+  const { suppressBroadcast = false } = options;
+  const current = refreshResult?.current;
+
+  if (!current?.ok) return;
+
+  const currAvailable = Number(current.available || 0);
+  const currMode = currAvailable >= 1000 ? "READY" : "OUT";
+
+  if (!stockBroadcastState.initialized || suppressBroadcast) {
+    stockBroadcastState.initialized = true;
+    stockBroadcastState.lastAnnouncedAvailable = currAvailable;
+    stockBroadcastState.lastAnnouncedMode = currMode;
+    return;
+  }
+
+  const prevAnnouncedAvailable = Number(stockBroadcastState.lastAnnouncedAvailable ?? NaN);
+  const prevAnnouncedMode = stockBroadcastState.lastAnnouncedMode;
+
+  if (currMode === "OUT") {
+    if (prevAnnouncedMode !== "OUT") {
+      await sendAutoStockBroadcast(client, "OUT", currAvailable);
+      stockBroadcastState.lastAnnouncedAvailable = currAvailable;
+      stockBroadcastState.lastAnnouncedMode = "OUT";
+    }
+    return;
+  }
+
+  if (currMode === "READY") {
+    if (prevAnnouncedMode !== "READY" || prevAnnouncedAvailable !== currAvailable) {
+      await sendAutoStockBroadcast(client, "READY", currAvailable);
+      stockBroadcastState.lastAnnouncedAvailable = currAvailable;
+      stockBroadcastState.lastAnnouncedMode = "READY";
+    }
+  }
+}
+
+async function syncStockAndPanel(client, options = {}) {
+  const refreshResult = await refreshStockCache();
+  await maybeBroadcastStockChange(client, refreshResult, options);
+  await refreshPanelMessage(client);
+  return refreshResult;
 }
 
 // ========= CHANNEL CLOSE =========
@@ -832,8 +954,7 @@ async function runAutoCloseSweep(client) {
         orders.set(order.orderId, order);
         saveOrders();
 
-        await refreshStockCache().catch(() => {});
-        await refreshPanelMessage(client).catch(() => {});
+        await syncStockAndPanel(client).catch(() => {});
 
         const msg =
           `⌛ Ticket expired otomatis karena tidak ada aktivitas selama ${AUTO_CLOSE_MINUTES} menit. ` +
@@ -862,8 +983,7 @@ async function runAutoCloseSweep(client) {
           "CLOSED"
         );
 
-        await refreshStockCache().catch(() => {});
-        await refreshPanelMessage(client).catch(() => {});
+        await syncStockAndPanel(client).catch(() => {});
         continue;
       }
 
@@ -874,8 +994,7 @@ async function runAutoCloseSweep(client) {
         "CLOSED"
       );
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
     } catch (e) {
       console.error("Auto-close sweep error:", e);
     }
@@ -921,36 +1040,15 @@ client.once("ready", async () => {
           .setRequired(false)
       )
       .toJSON(),
-
-    new SlashCommandBuilder()
-      .setName("broadcast")
-      .setDescription("Staff: broadcast info penting")
-      .addStringOption((option) =>
-        option
-          .setName("tipe")
-          .setDescription("Tipe broadcast")
-          .setRequired(true)
-          .addChoices({ name: "stock ready", value: "STOCK_READY" })
-      )
-      .addChannelOption((option) =>
-        option
-          .setName("channel")
-          .setDescription("Pilih channel tujuan broadcast")
-          .setRequired(true)
-          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-      )
-      .toJSON(),
   ]);
 
-  console.log("Slash commands /proses, /broadcast registered.");
+  console.log("Slash command /proses registered.");
 
-  await refreshStockCache();
-  await refreshPanelMessage(client);
+  await syncStockAndPanel(client, { suppressBroadcast: true });
 
   setInterval(async () => {
     try {
-      await refreshStockCache();
-      await refreshPanelMessage(client);
+      await syncStockAndPanel(client);
     } catch (e) {
       console.error("stock/panel interval error:", e);
     }
@@ -1001,8 +1099,7 @@ client.on("messageCreate", async (msg) => {
       orders.set(order.orderId, order);
       saveOrders();
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       await msg.channel
         .send(
@@ -1019,43 +1116,6 @@ client.on("messageCreate", async (msg) => {
 
 client.on("interactionCreate", async (i) => {
   try {
-    if (i.isChatInputCommand() && i.commandName === "broadcast") {
-      const member = await i.guild.members.fetch(i.user.id).catch(() => null);
-      if (!isStaff(member)) {
-        return i.reply({ content: "Khusus staff/owner.", ephemeral: true });
-      }
-
-      const tipe = i.options.getString("tipe");
-      const target = i.options.getChannel("channel");
-
-      if (tipe !== "STOCK_READY") {
-        return i.reply({ content: "Tipe broadcast tidak valid.", ephemeral: true });
-      }
-
-      if (!target || (target.type !== ChannelType.GuildText && target.type !== ChannelType.GuildAnnouncement)) {
-        return i.reply({ content: "Channel tidak valid (harus text/announcement).", ephemeral: true });
-      }
-
-      await refreshStockCache();
-
-      if (!isStockReady()) {
-        return i.reply({
-          content: `⛔ Tidak bisa broadcast "stock ready" karena stok sekarang HABIS.\nStok tersedia: **${fmtIDR(stockCache.available)} Robux**`,
-          ephemeral: true,
-        });
-      }
-
-      await refreshPanelMessage(client);
-
-      await target.send({
-        content: "📢 @everyone",
-        embeds: [buildStockReadyBroadcastEmbed()],
-        components: buildGoToPanelButtonRow(),
-      });
-
-      return i.reply({ content: `✅ Broadcast terkirim ke <#${target.id}>`, ephemeral: true });
-    }
-
     if (i.isChatInputCommand() && i.commandName === "proses") {
       const member = await i.guild.members.fetch(i.user.id).catch(() => null);
       if (!isStaff(member)) {
@@ -1104,8 +1164,7 @@ client.on("interactionCreate", async (i) => {
       orders.set(order.orderId, order);
       saveOrders();
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       const now = new Date();
       const tanggal = now.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta" });
@@ -1135,7 +1194,6 @@ client.on("interactionCreate", async (i) => {
         const fileName = path.basename(pdfPath);
         const invoiceEmbed = buildInvoiceEmbed(order);
 
-        // Kirim invoice ke DM user
         try {
           const customerUser = await client.users.fetch(order.userId);
           const dmInvoiceFile = new AttachmentBuilder(pdfPath, { name: fileName });
@@ -1152,7 +1210,6 @@ client.on("interactionCreate", async (i) => {
           console.error("Invoice DM send error:", eDm?.stack || eDm);
         }
 
-        // Tetap kirim invoice ke channel ticket
         const ticketInvoiceFile = new AttachmentBuilder(pdfPath, { name: fileName });
 
         await i.channel.send({
@@ -1173,8 +1230,7 @@ client.on("interactionCreate", async (i) => {
     }
 
     if (i.isButton() && i.customId === "ob_order_open_modal") {
-      await refreshStockCache();
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       if (!isStockReady()) {
         return i.reply({
@@ -1200,8 +1256,7 @@ client.on("interactionCreate", async (i) => {
         return i.editReply("Jumlah harus kelipatan 1000 (contoh: 1000 / 2000 / 3000).");
       }
 
-      await refreshStockCache();
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       if (!isStockReady()) {
         return i.editReply(`⛔ Stock HABIS.\nStok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`);
@@ -1307,8 +1362,7 @@ client.on("interactionCreate", async (i) => {
       orders.set(orderId, order);
       saveOrders();
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       const statusEmbed = buildCustomerStatusEmbed(order);
 
@@ -1406,8 +1460,7 @@ client.on("interactionCreate", async (i) => {
       orders.set(order.orderId, order);
       saveOrders();
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       await i.reply({
         embeds: [buildSeaBankInstructions(order)],
@@ -1446,8 +1499,7 @@ client.on("interactionCreate", async (i) => {
       orders.set(order.orderId, order);
       saveOrders();
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       await i.reply({ content: "❌ Order ditutup. Ticket akan dihapus dalam 3 detik...", ephemeral: true });
       await deleteTicketChannel(i.channel, order, "❌ Order ditutup oleh user. Ticket akan dihapus...", "CANCELLED");
@@ -1471,8 +1523,7 @@ client.on("interactionCreate", async (i) => {
       await i.reply({ content: "🔒 Ticket akan dihapus dalam 3 detik...", ephemeral: true });
       await deleteTicketChannel(i.channel, order, "🔒 Ticket ditutup. Ticket akan dihapus...", "CLOSED");
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
       return;
     }
 
@@ -1492,8 +1543,7 @@ client.on("interactionCreate", async (i) => {
       orders.set(order.orderId, order);
       saveOrders();
 
-      await refreshStockCache().catch(() => {});
-      await refreshPanelMessage(client).catch(() => {});
+      await syncStockAndPanel(client).catch(() => {});
 
       await i.reply({ content: "🔒 Ticket akan dihapus dalam 3 detik...", ephemeral: true });
       await deleteTicketChannel(i.channel, order, "🔒 Ticket ditutup (ineligible). Ticket akan dihapus...", "CLOSED");
