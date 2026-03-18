@@ -373,8 +373,9 @@ let stockCache = {
 
 const stockBroadcastState = {
   initialized: false,
-  lastAnnouncedAvailable: null,
-  lastAnnouncedMode: null, // READY | OUT
+  lastObservedAvailable: null,
+  lastObservedMode: null, // READY | OUT
+  lastObservedBucket: null, // 1,2,3... (untuk READY), null untuk OUT
 };
 
 async function refreshStockCache() {
@@ -410,6 +411,16 @@ async function refreshStockCache() {
 
 function isStockReady() {
   return Number(stockCache?.available || 0) >= 1000;
+}
+
+function getStockBroadcastMode(available) {
+  return Number(available || 0) >= 1000 ? "READY" : "OUT";
+}
+
+function getStockBucket(available) {
+  const n = Number(available || 0);
+  if (!Number.isFinite(n) || n < 1000) return null;
+  return Math.floor(n / 1000);
 }
 
 // ========= INVOICE (PDF) =========
@@ -849,34 +860,51 @@ async function maybeBroadcastStockChange(client, refreshResult, options = {}) {
   if (!current?.ok) return;
 
   const currAvailable = Number(current.available || 0);
-  const currMode = currAvailable >= 1000 ? "READY" : "OUT";
+  const currMode = getStockBroadcastMode(currAvailable);
+  const currBucket = getStockBucket(currAvailable);
 
   if (!stockBroadcastState.initialized || suppressBroadcast) {
     stockBroadcastState.initialized = true;
-    stockBroadcastState.lastAnnouncedAvailable = currAvailable;
-    stockBroadcastState.lastAnnouncedMode = currMode;
+    stockBroadcastState.lastObservedAvailable = currAvailable;
+    stockBroadcastState.lastObservedMode = currMode;
+    stockBroadcastState.lastObservedBucket = currBucket;
     return;
   }
 
-  const prevAnnouncedAvailable = Number(stockBroadcastState.lastAnnouncedAvailable ?? NaN);
-  const prevAnnouncedMode = stockBroadcastState.lastAnnouncedMode;
+  const prevAvailable = Number(stockBroadcastState.lastObservedAvailable || 0);
+  const prevMode = stockBroadcastState.lastObservedMode;
+  const prevBucket = stockBroadcastState.lastObservedBucket;
+
+  let shouldBroadcast = false;
+  let broadcastMode = null;
 
   if (currMode === "OUT") {
-    if (prevAnnouncedMode !== "OUT") {
-      await sendAutoStockBroadcast(client, "OUT", currAvailable);
-      stockBroadcastState.lastAnnouncedAvailable = currAvailable;
-      stockBroadcastState.lastAnnouncedMode = "OUT";
+    // Broadcast OUT hanya saat turun dari READY ke OUT
+    if (prevMode === "READY") {
+      shouldBroadcast = true;
+      broadcastMode = "OUT";
     }
-    return;
+  } else {
+    // currMode === "READY"
+    // Broadcast READY kalau:
+    // - sebelumnya OUT lalu masuk READY
+    // - atau tetap READY tapi pindah bucket ribuan
+    if (prevMode === "OUT") {
+      shouldBroadcast = true;
+      broadcastMode = "READY";
+    } else if (prevMode === "READY" && prevBucket !== currBucket) {
+      shouldBroadcast = true;
+      broadcastMode = "READY";
+    }
   }
 
-  if (currMode === "READY") {
-    if (prevAnnouncedMode !== "READY" || prevAnnouncedAvailable !== currAvailable) {
-      await sendAutoStockBroadcast(client, "READY", currAvailable);
-      stockBroadcastState.lastAnnouncedAvailable = currAvailable;
-      stockBroadcastState.lastAnnouncedMode = "READY";
-    }
+  if (shouldBroadcast && broadcastMode) {
+    await sendAutoStockBroadcast(client, broadcastMode, currAvailable);
   }
+
+  stockBroadcastState.lastObservedAvailable = currAvailable;
+  stockBroadcastState.lastObservedMode = currMode;
+  stockBroadcastState.lastObservedBucket = currBucket;
 }
 
 async function syncStockAndPanel(client, options = {}) {
@@ -932,9 +960,9 @@ async function deleteTicketChannel(channel, order, reasonText, finalStatus = nul
  * Status auto close:
  * - AWAITING_PAYMENT  -> EXPIRED
  * - AWAITING_PROOF    -> EXPIRED
- * - DONE             -> CLOSED
- * - INELIGIBLE       -> INELIGIBLE (channel ditutup otomatis)
- * - PROOF_SUBMITTED  -> tidak auto close
+ * - DONE              -> CLOSED
+ * - INELIGIBLE        -> INELIGIBLE (channel ditutup otomatis)
+ * - PROOF_SUBMITTED   -> tidak auto close
  */
 async function runAutoCloseSweep(client) {
   const now = Date.now();
@@ -1124,8 +1152,8 @@ client.on("messageCreate", async (msg) => {
       await msg.channel
         .send(
           `✅ Bukti pembayaran diterima dari <@${order.userId}>.\n` +
-          `📎 Tipe bukti: **file/forward**\n` +
-          `👮‍♂️ Staff/Owner akan proses Robux kamu, mohon bersedia menunggu...`
+            `📎 Tipe bukti: **file/forward**\n` +
+            `👮‍♂️ Staff/Owner akan proses Robux kamu, mohon bersedia menunggu...`
         )
         .catch(() => {});
     }
@@ -1240,7 +1268,11 @@ client.on("interactionCreate", async (i) => {
       } catch (e) {
         console.error("Invoice generate/send error:", e?.stack || e);
         await i.channel
-          .send(`⚠️ Proses selesai, tapi gagal membuat/mengirim invoice PDF.\n**Error:** \`${String(e?.message || e)}\``)
+          .send(
+            `⚠️ Proses selesai, tapi gagal membuat/mengirim invoice PDF.\n**Error:** \`${String(
+              e?.message || e
+            )}\``
+          )
           .catch(() => {});
       } finally {
         if (pdfPath) fs.unlink(pdfPath, () => {});
