@@ -57,6 +57,26 @@ const DATA_FILE = path.resolve("./orders.json");
 /** @type {Map<string, any>} */
 const orders = new Map();
 
+// ========= ORDER CREATION LOCK (ANTI RACE CONDITION) =========
+let orderCreationLock = Promise.resolve();
+
+async function withOrderCreationLock(task) {
+  const previousLock = orderCreationLock;
+
+  let releaseCurrentLock;
+  orderCreationLock = new Promise((resolve) => {
+    releaseCurrentLock = resolve;
+  });
+
+  await previousLock;
+
+  try {
+    return await task();
+  } finally {
+    releaseCurrentLock();
+  }
+}
+
 function loadOrders() {
   try {
     if (!fs.existsSync(DATA_FILE)) return;
@@ -1244,154 +1264,160 @@ client.on("interactionCreate", async (i) => {
     if (i.isModalSubmit() && i.customId === "ob_order_modal_submit") {
       await i.deferReply({ ephemeral: true });
 
-      const robloxUsername = i.fields.getTextInputValue("roblox_username")?.trim()?.replace(/^@/, "");
-      const qtyRaw = i.fields.getTextInputValue("qty")?.trim();
-      const note = i.fields.getTextInputValue("note")?.trim();
+      return withOrderCreationLock(async () => {
+        const robloxUsername = i.fields
+          .getTextInputValue("roblox_username")
+          ?.trim()
+          ?.replace(/^@/, "");
+        const qtyRaw = i.fields.getTextInputValue("qty")?.trim();
+        const note = i.fields.getTextInputValue("note")?.trim();
 
-      const qty = Number(String(qtyRaw || "").replace(/[^\d]/g, ""));
-      if (!Number.isFinite(qty) || qty < 1000) {
-        return i.editReply("Jumlah minimal 1000.");
-      }
-      if (qty % 1000 !== 0) {
-        return i.editReply("Jumlah harus kelipatan 1000 (contoh: 1000 / 2000 / 3000).");
-      }
-
-      await syncStockAndPanel(client).catch(() => {});
-
-      if (!isStockReady()) {
-        return i.editReply(`⛔ Stock HABIS.\nStok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`);
-      }
-
-      if (qty > stockCache.available) {
-        return i.editReply(
-          `❌ Order gagal. Jumlah Robux yang kamu input **lebih besar** dari stok tersedia.\n` +
-          `✅ Stok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`
-        );
-      }
-
-      let eligibility;
-      try {
-        eligibility = await checkRobloxGroupEligibility(robloxUsername);
-      } catch (e) {
-        console.error("Roblox check error:", e);
-        return i.editReply("Gagal cek komunitas Roblox (API). Coba lagi beberapa saat.");
-      }
-
-      const orderId = newOrderId();
-      const total = computeTotal(qty);
-
-      const guild = await client.guilds.fetch(GUILD_ID);
-      const user = i.user;
-
-      let ticket;
-      try {
-        const ticketName = `oleng-${orderId}`.toLowerCase();
-        ticket = await guild.channels.create({
-          name: ticketName,
-          type: ChannelType.GuildText,
-          parent: TICKET_CATEGORY_ID,
-          topic: `OLENG BEACH | ${orderId} | User: ${user.id} | Roblox: ${robloxUsername}`,
-          permissionOverwrites: [
-            { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-            {
-              id: client.user.id,
-              allow: [
-                PermissionsBitField.Flags.ViewChannel,
-                PermissionsBitField.Flags.SendMessages,
-                PermissionsBitField.Flags.ReadMessageHistory,
-                PermissionsBitField.Flags.ManageChannels,
-                PermissionsBitField.Flags.ManageMessages,
-                PermissionsBitField.Flags.AttachFiles,
-                PermissionsBitField.Flags.EmbedLinks,
-              ],
-            },
-            {
-              id: user.id,
-              allow: [
-                PermissionsBitField.Flags.ViewChannel,
-                PermissionsBitField.Flags.SendMessages,
-                PermissionsBitField.Flags.ReadMessageHistory,
-                PermissionsBitField.Flags.AttachFiles,
-              ],
-            },
-            {
-              id: STAFF_ROLE_ID,
-              allow: [
-                PermissionsBitField.Flags.ViewChannel,
-                PermissionsBitField.Flags.SendMessages,
-                PermissionsBitField.Flags.ReadMessageHistory,
-                PermissionsBitField.Flags.ManageMessages,
-              ],
-            },
-          ],
-        });
-      } catch (e) {
-        console.error("Ticket create error:", e);
-        return i.editReply(
-          "Gagal membuat ticket. Cek permission bot di **Category Ticket** (Manage Channels, View Channel, Send Messages)."
-        );
-      }
-
-      const order = {
-        orderId,
-        guildId: GUILD_ID,
-        channelId: ticket.id,
-        userId: user.id,
-
-        robloxUsername,
-        robloxUserId: eligibility.userId ?? null,
-        robloxJoinTime: eligibility.joinTime ?? null,
-        robloxDaysInGroup: eligibility.daysInGroup ?? 0,
-        robloxEligible: Boolean(eligibility.ok),
-        ineligibleReason: eligibility.ok ? null : eligibility.reason,
-
-        qty,
-        total,
-        note: note || "",
-
-        status: eligibility.ok ? "AWAITING_PAYMENT" : "INELIGIBLE",
-        paymentMethod: "SEABANK",
-        createdAt: nowIso(),
-        lastActivityAt: nowIso(),
-
-        autoCloseEnabled: true,
-        autoClosePaused: false,
-        autoCloseDeadlineAt: new Date(Date.now() + AUTO_CLOSE_MINUTES * 60 * 1000).toISOString(),
-      };
-
-      orders.set(orderId, order);
-      saveOrders();
-
-      await syncStockAndPanel(client).catch(() => {});
-
-      const statusEmbed = buildCustomerStatusEmbed(order);
-
-      if (order.robloxEligible) {
-        await ticket
-          .send({
-            content: `Halo <@${user.id}> 👋\nBerikut detail order kamu. Silakan lanjut pembayaran via tombol di bawah.`,
-            embeds: [statusEmbed],
-            components: buildCustomerButtonsEligible(orderId),
-          })
-          .catch(() => {});
-
-        if (order.note) {
-          await ticket.send({ content: `📝 Catatan: ${order.note}` }).catch(() => {});
+        const qty = Number(String(qtyRaw || "").replace(/[^\d]/g, ""));
+        if (!Number.isFinite(qty) || qty < 1000) {
+          return i.editReply("Jumlah minimal 1000.");
         }
-      } else {
-        await ticket
-          .send({
-            content:
-              `Halo <@${user.id}> 👋\nKamu **belum memenuhi syarat** untuk order.\n` +
-              `⏳ Ticket ini akan auto close dalam **${AUTO_CLOSE_MINUTES} menit** walaupun ada chat atau file yang dikirim.`,
-            embeds: [statusEmbed],
-            components: buildCustomerButtonsIneligible(orderId),
-          })
-          .catch(() => {});
-      }
+        if (qty % 1000 !== 0) {
+          return i.editReply("Jumlah harus kelipatan 1000 (contoh: 1000 / 2000 / 3000).");
+        }
 
-      await i.editReply(`✅ Ticket dibuat: <#${ticket.id}>`);
-      return;
+        await syncStockAndPanel(client).catch(() => {});
+
+        if (!isStockReady()) {
+          return i.editReply(
+            `⛔ Stock HABIS.\nStok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`
+          );
+        }
+
+        if (qty > stockCache.available) {
+          return i.editReply(
+            `❌ Order gagal. Jumlah Robux yang kamu input **lebih besar** dari stok tersedia.\n` +
+              `✅ Stok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`
+          );
+        }
+
+        let eligibility;
+        try {
+          eligibility = await checkRobloxGroupEligibility(robloxUsername);
+        } catch (e) {
+          console.error("Roblox check error:", e);
+          return i.editReply("Gagal cek komunitas Roblox (API). Coba lagi beberapa saat.");
+        }
+
+        const orderId = newOrderId();
+        const total = computeTotal(qty);
+
+        const guild = await client.guilds.fetch(GUILD_ID);
+        const user = i.user;
+
+        let ticket;
+        try {
+          const ticketName = `oleng-${orderId}`.toLowerCase();
+          ticket = await guild.channels.create({
+            name: ticketName,
+            type: ChannelType.GuildText,
+            parent: TICKET_CATEGORY_ID,
+            topic: `OLENG BEACH | ${orderId} | User: ${user.id} | Roblox: ${robloxUsername}`,
+            permissionOverwrites: [
+              { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+              {
+                id: client.user.id,
+                allow: [
+                  PermissionsBitField.Flags.ViewChannel,
+                  PermissionsBitField.Flags.SendMessages,
+                  PermissionsBitField.Flags.ReadMessageHistory,
+                  PermissionsBitField.Flags.ManageChannels,
+                  PermissionsBitField.Flags.ManageMessages,
+                  PermissionsBitField.Flags.AttachFiles,
+                  PermissionsBitField.Flags.EmbedLinks,
+                ],
+              },
+              {
+                id: user.id,
+                allow: [
+                  PermissionsBitField.Flags.ViewChannel,
+                  PermissionsBitField.Flags.SendMessages,
+                  PermissionsBitField.Flags.ReadMessageHistory,
+                  PermissionsBitField.Flags.AttachFiles,
+                ],
+              },
+              {
+                id: STAFF_ROLE_ID,
+                allow: [
+                  PermissionsBitField.Flags.ViewChannel,
+                  PermissionsBitField.Flags.SendMessages,
+                  PermissionsBitField.Flags.ReadMessageHistory,
+                  PermissionsBitField.Flags.ManageMessages,
+                ],
+              },
+            ],
+          });
+        } catch (e) {
+          console.error("Ticket create error:", e);
+          return i.editReply(
+            "Gagal membuat ticket. Cek permission bot di **Category Ticket** (Manage Channels, View Channel, Send Messages)."
+          );
+        }
+
+        const order = {
+          orderId,
+          guildId: GUILD_ID,
+          channelId: ticket.id,
+          userId: user.id,
+
+          robloxUsername,
+          robloxUserId: eligibility.userId ?? null,
+          robloxJoinTime: eligibility.joinTime ?? null,
+          robloxDaysInGroup: eligibility.daysInGroup ?? 0,
+          robloxEligible: Boolean(eligibility.ok),
+          ineligibleReason: eligibility.ok ? null : eligibility.reason,
+
+          qty,
+          total,
+          note: note || "",
+
+          status: eligibility.ok ? "AWAITING_PAYMENT" : "INELIGIBLE",
+          paymentMethod: "SEABANK",
+          createdAt: nowIso(),
+          lastActivityAt: nowIso(),
+
+          autoCloseEnabled: true,
+          autoClosePaused: false,
+          autoCloseDeadlineAt: new Date(Date.now() + AUTO_CLOSE_MINUTES * 60 * 1000).toISOString(),
+        };
+
+        orders.set(orderId, order);
+        saveOrders();
+
+        await syncStockAndPanel(client).catch(() => {});
+
+        const statusEmbed = buildCustomerStatusEmbed(order);
+
+        if (order.robloxEligible) {
+          await ticket
+            .send({
+              content: `Halo <@${user.id}> 👋\nBerikut detail order kamu. Silakan lanjut pembayaran via tombol di bawah.`,
+              embeds: [statusEmbed],
+              components: buildCustomerButtonsEligible(orderId),
+            })
+            .catch(() => {});
+
+          if (order.note) {
+            await ticket.send({ content: `📝 Catatan: ${order.note}` }).catch(() => {});
+          }
+        } else {
+          await ticket
+            .send({
+              content:
+                `Halo <@${user.id}> 👋\nKamu **belum memenuhi syarat** untuk order.\n` +
+                `⏳ Ticket ini akan auto close dalam **${AUTO_CLOSE_MINUTES} menit** walaupun ada chat atau file yang dikirim.`,
+              embeds: [statusEmbed],
+              components: buildCustomerButtonsIneligible(orderId),
+            })
+            .catch(() => {});
+        }
+
+        return i.editReply(`✅ Ticket dibuat: <#${ticket.id}>`);
+      });
     }
 
     if (!i.isButton()) return;
@@ -1470,7 +1496,7 @@ client.on("interactionCreate", async (i) => {
       await i.channel
         .send(
           `📌 Setelah transfer, kirim **bukti pembayaran (file apapun / gambar / dokumen / forward)** di sini. ` +
-          `Jika dalam **${AUTO_CLOSE_MINUTES} menit** tidak kirim bukti pembayaran, order akan di close (expired) otomatis.`
+            `Jika dalam **${AUTO_CLOSE_MINUTES} menit** tidak kirim bukti pembayaran, order akan di close (expired) otomatis.`
         )
         .catch(() => {});
       return;
