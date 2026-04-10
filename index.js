@@ -25,6 +25,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const PANEL_CHANNEL_ID = process.env.PANEL_CHANNEL_ID;
 const UPDATE_STOCK_CHANNEL_ID = process.env.UPDATE_STOCK_CHANNEL_ID;
+const TESTIMONI_CHANNEL_ID = process.env.TESTIMONI_CHANNEL_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
 
@@ -47,6 +48,7 @@ if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
 if (!GUILD_ID) throw new Error("Missing GUILD_ID");
 if (!PANEL_CHANNEL_ID) throw new Error("Missing PANEL_CHANNEL_ID");
 if (!UPDATE_STOCK_CHANNEL_ID) throw new Error("Missing UPDATE_STOCK_CHANNEL_ID");
+if (!TESTIMONI_CHANNEL_ID) throw new Error("Missing TESTIMONI_CHANNEL_ID");
 if (!TICKET_CATEGORY_ID) throw new Error("Missing TICKET_CATEGORY_ID");
 if (!STAFF_ROLE_ID) throw new Error("Missing STAFF_ROLE_ID");
 if (!ROBLOX_API_KEY) throw new Error("Missing ROBLOX_API_KEY");
@@ -375,7 +377,6 @@ const stockBroadcastState = {
   initialized: false,
   lastObservedAvailable: null,
   lastObservedMode: null, // READY | OUT
-  lastObservedBucket: null, // 1,2,3... (untuk READY), null untuk OUT
 };
 
 async function refreshStockCache() {
@@ -415,12 +416,6 @@ function isStockReady() {
 
 function getStockBroadcastMode(available) {
   return Number(available || 0) >= 1000 ? "READY" : "OUT";
-}
-
-function getStockBucket(available) {
-  const n = Number(available || 0);
-  if (!Number.isFinite(n) || n < 1000) return null;
-  return Math.floor(n / 1000);
 }
 
 // ========= INVOICE (PDF) =========
@@ -521,8 +516,8 @@ function buildInvoiceEmbed(order) {
 // ========= DISCORD UI BUILDERS =========
 function buildPanelEmbed() {
   const stockLine = stockCache.ok
-    ? `**STOK SEKARANG:** ${fmtIDR(stockCache.available)} Robux`
-    : `**STOK SEKARANG:** (gagal fetch)`;
+    ? `**STATUS STOK:** ${isStockReady() ? "READY" : "HABIS"}`
+    : `**STATUS STOK:** (gagal fetch)`;
 
   const stockWarn =
     stockCache.ok && stockCache.available < 1000
@@ -567,9 +562,7 @@ function buildPanelEmbed() {
 
 function buildStockStatusButton() {
   const ready = isStockReady();
-  const label = ready
-    ? `📦 STOK: ${fmtIDR(stockCache.available)}`
-    : "⛔ STOCK: HABIS";
+  const label = ready ? "📦 STOK: READY" : "⛔ STOK: HABIS";
 
   return new ButtonBuilder()
     .setCustomId("ob_stock_info")
@@ -765,15 +758,13 @@ function getPanelUrl() {
   return `https://discord.com/channels/${GUILD_ID}/${PANEL_CHANNEL_ID}`;
 }
 
-function buildStockReadyBroadcastEmbed(available) {
+function buildStockReadyBroadcastEmbed() {
   return new EmbedBuilder()
     .setColor(0x00ff95)
     .setTitle("💚✨ STOCK ROBUX READY SEKARANG ✨💚")
     .setDescription(
       [
         "🚀 **UPDATE STOK MASUK!**",
-        "",
-        `💎 **Stok tersedia sekarang: ${fmtIDR(available)} Robux**`,
         "",
         "🔥 **Bisa langsung order sekarang**",
         "⚡ **Fast response**",
@@ -818,7 +809,63 @@ function buildStockBroadcastButtons() {
   ];
 }
 
-async function sendAutoStockBroadcast(client, mode, available) {
+function buildTestimoniEmbed(order, customerUser, staffUser) {
+  const tanggalOrder = fmtDateID(order.doneAt || order.createdAt || nowIso());
+
+  return new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle("🌟 TESTIMONI PEMBELIAN ROBUX 🌟")
+    .setDescription(
+      [
+        "```yaml",
+        "Status    : BERHASIL DIPROSES",
+        "Layanan   : Robux via Community Payout",
+        "```",
+        "",
+        "✨ **Pesanan berhasil diproses dengan sukses!**",
+        "",
+        `👤 **Customer Discord** : ${customerUser ? `<@${customerUser.id}>` : `<@${order.userId}>`}`,
+        `🎮 **Username Roblox** : \`${order.robloxUsername}\``,
+        `💎 **Jumlah Robux**    : **${fmtIDR(order.qty)} Robux**`,
+        `💰 **Total Bayar**     : **Rp ${fmtIDR(order.total)}**`,
+        `🧾 **Order ID**        : \`${order.orderId}\``,
+        `📅 **Tanggal Order**   : **${tanggalOrder} WIB**`,
+        `🛠️ **Diproses Oleh**   : ${staffUser ? `<@${staffUser.id}>` : "-"}`,
+        "",
+        `💚 Terima kasih sudah order di **${STORE_NAME}**`,
+        "🚀 Ditunggu order berikutnya yaa!",
+      ].join("\n")
+    )
+    .setFooter({ text: "OLENG BEACH — Testimoni Order" })
+    .setTimestamp();
+}
+
+async function sendTestimoniMessage(client, order, staffUser) {
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const channel = await guild.channels.fetch(TESTIMONI_CHANNEL_ID);
+
+    if (!channel) return;
+    if (
+      channel.type !== ChannelType.GuildText &&
+      channel.type !== ChannelType.GuildAnnouncement
+    ) {
+      console.error("TESTIMONI_CHANNEL_ID must be a text or announcement channel.");
+      return;
+    }
+
+    const customerUser = await client.users.fetch(order.userId).catch(() => null);
+
+    await channel.send({
+      content: "✨ **Testimoni order baru berhasil diproses!** ✨",
+      embeds: [buildTestimoniEmbed(order, customerUser, staffUser)],
+    });
+  } catch (e) {
+    console.error("sendTestimoniMessage error:", e);
+  }
+}
+
+async function sendAutoStockBroadcast(client, mode) {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     const channel = await guild.channels.fetch(UPDATE_STOCK_CHANNEL_ID);
@@ -842,7 +889,7 @@ async function sendAutoStockBroadcast(client, mode, available) {
           }
         : {
             content: "🚨 @everyone",
-            embeds: [buildStockReadyBroadcastEmbed(available)],
+            embeds: [buildStockReadyBroadcastEmbed()],
             components: buildStockBroadcastButtons(),
             allowedMentions: { parse: ["everyone"] },
           };
@@ -861,50 +908,30 @@ async function maybeBroadcastStockChange(client, refreshResult, options = {}) {
 
   const currAvailable = Number(current.available || 0);
   const currMode = getStockBroadcastMode(currAvailable);
-  const currBucket = getStockBucket(currAvailable);
 
   if (!stockBroadcastState.initialized || suppressBroadcast) {
     stockBroadcastState.initialized = true;
     stockBroadcastState.lastObservedAvailable = currAvailable;
     stockBroadcastState.lastObservedMode = currMode;
-    stockBroadcastState.lastObservedBucket = currBucket;
     return;
   }
 
-  const prevAvailable = Number(stockBroadcastState.lastObservedAvailable || 0);
   const prevMode = stockBroadcastState.lastObservedMode;
-  const prevBucket = stockBroadcastState.lastObservedBucket;
 
   let shouldBroadcast = false;
   let broadcastMode = null;
 
-  if (currMode === "OUT") {
-    // Broadcast OUT hanya saat turun dari READY ke OUT
-    if (prevMode === "READY") {
-      shouldBroadcast = true;
-      broadcastMode = "OUT";
-    }
-  } else {
-    // currMode === "READY"
-    // Broadcast READY kalau:
-    // - sebelumnya OUT lalu masuk READY
-    // - atau tetap READY tapi pindah bucket ribuan
-    if (prevMode === "OUT") {
-      shouldBroadcast = true;
-      broadcastMode = "READY";
-    } else if (prevMode === "READY" && prevBucket !== currBucket) {
-      shouldBroadcast = true;
-      broadcastMode = "READY";
-    }
+  if (prevMode !== currMode) {
+    shouldBroadcast = true;
+    broadcastMode = currMode;
   }
 
   if (shouldBroadcast && broadcastMode) {
-    await sendAutoStockBroadcast(client, broadcastMode, currAvailable);
+    await sendAutoStockBroadcast(client, broadcastMode);
   }
 
   stockBroadcastState.lastObservedAvailable = currAvailable;
   stockBroadcastState.lastObservedMode = currMode;
-  stockBroadcastState.lastObservedBucket = currBucket;
 }
 
 async function syncStockAndPanel(client, options = {}) {
@@ -1236,6 +1263,8 @@ client.on("interactionCreate", async (i) => {
         })
         .catch(() => {});
 
+      await sendTestimoniMessage(client, order, i.user).catch(() => {});
+
       let pdfPath = null;
       try {
         pdfPath = await createInvoicePdf(order, i.user);
@@ -1286,7 +1315,7 @@ client.on("interactionCreate", async (i) => {
 
       if (!isStockReady()) {
         return i.reply({
-          content: `⛔ Stock HABIS.\nStok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`,
+          content: `⛔ Stock HABIS.\nStatus stok saat ini: **HABIS**`,
           ephemeral: true,
         });
       }
@@ -1315,15 +1344,13 @@ client.on("interactionCreate", async (i) => {
         await syncStockAndPanel(client).catch(() => {});
 
         if (!isStockReady()) {
-          return i.editReply(
-            `⛔ Stock HABIS.\nStok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`
-          );
+          return i.editReply(`⛔ Stock HABIS.\nStatus stok saat ini: **HABIS**`);
         }
 
         if (qty > stockCache.available) {
           return i.editReply(
-            `❌ Order gagal. Jumlah Robux yang kamu input **lebih besar** dari stok tersedia.\n` +
-              `✅ Stok tersedia sekarang: **${fmtIDR(stockCache.available)} Robux**`
+            `❌ Order gagal. Jumlah Robux yang kamu input **lebih besar** dari stok yang bisa diproses saat ini.\n` +
+              `Silakan coba jumlah yang lebih kecil atau tunggu update stok berikutnya.`
           );
         }
 
