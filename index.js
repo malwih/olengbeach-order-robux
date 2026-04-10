@@ -811,6 +811,8 @@ function buildStockBroadcastButtons() {
 
 function buildTestimoniEmbed(order, customerUser, staffUser) {
   const tanggalOrder = fmtDateID(order.doneAt || order.createdAt || nowIso());
+  const customerAvatar =
+    customerUser?.displayAvatarURL?.({ extension: "png", size: 512 }) || null;
 
   return new EmbedBuilder()
     .setColor(0x57f287)
@@ -836,6 +838,7 @@ function buildTestimoniEmbed(order, customerUser, staffUser) {
         "🚀 Ditunggu order berikutnya yaa!",
       ].join("\n")
     )
+    .setThumbnail(customerAvatar)
     .setFooter({ text: "OLENG BEACH — Testimoni Order" })
     .setTimestamp();
 }
