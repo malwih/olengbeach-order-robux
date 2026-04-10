@@ -519,10 +519,7 @@ function buildPanelEmbed() {
     ? `**STATUS STOK:** ${isStockReady() ? "READY" : "HABIS"}`
     : `**STATUS STOK:** (gagal fetch)`;
 
-  const stockWarn =
-    stockCache.ok && stockCache.available < 1000
-      ? "\n\n⛔ **Stock habis (saldo group < 1.000).**"
-      : "";
+  const stockWarn = "";
 
   const stockMeta = stockCache.ok
     ? `\n_Updated: ${fmtDateID(stockCache.updatedAt)} WIB_`
